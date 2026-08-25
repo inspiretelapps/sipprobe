@@ -2,7 +2,8 @@
 
 A portable Windows diagnostic utility that tests SIP registration independently of an IP handset.
 
-This repository is the source for that tool. The Windows executable is attached to GitHub Releases rather than committed here.
+Private source: [inspiretelapps/sipprobe](https://github.com/inspiretelapps/sipprobe).
+The Windows executable is attached to [GitHub Releases](https://github.com/inspiretelapps/sipprobe/releases) rather than committed here.
 
 ## What it proves
 
