@@ -79,10 +79,11 @@ public sealed class SipDiagnosticEngine
             cancellationToken.ThrowIfCancellationRequested();
             Log(DiagnosticLevel.Info, $"Trying {address} ({address.AddressFamily})...");
 
-            await using ISipChannel? channel = await TryOpenChannelAsync(profile, address, cancellationToken, ex => lastConnectionError = ex);
+            ISipChannel? channel = await TryOpenChannelAsync(profile, address, cancellationToken, ex => lastConnectionError = ex);
             if (channel is null)
                 continue;
 
+            IHeldSipRegistration? held = null;
             var networkReachable = profile.Transport != SipTransport.Udp;
             try
             {
@@ -116,9 +117,10 @@ public sealed class SipDiagnosticEngine
                 if (firstResponse.StatusCode == 200)
                 {
                     Log(DiagnosticLevel.Success, "The PBX accepted registration without a digest challenge.");
-                    await TryRemoveDiagnosticBindingAsync(
+                    var accepted = await FinishSuccessfulRegistrationAsync(
                         channel, profile, requestUri, callId, fromTag, 2, null, cancellationToken);
-                    return Result(true, true, true, 200, "Registration test succeeded.");
+                    held = accepted.Held;
+                    return accepted;
                 }
 
                 if (firstResponse.StatusCode is not (401 or 407))
@@ -187,11 +189,18 @@ public sealed class SipDiagnosticEngine
 
                 if (finalResponse.StatusCode == 200)
                 {
+                    if (profile.UnregisterOnly)
+                    {
+                        Log(DiagnosticLevel.Success, "Unregister succeeded. The diagnostic registration is no longer on the PBX.");
+                        return Result(true, true, true, 200, "Unregistered.");
+                    }
+
                     Log(DiagnosticLevel.Success,
                         "REGISTER succeeded. The PBX, credentials, network path, and selected transport all work from this laptop.");
-                    await TryRemoveDiagnosticBindingAsync(
+                    var accepted = await FinishSuccessfulRegistrationAsync(
                         channel, profile, requestUri, callId, fromTag, 3, challenge, cancellationToken);
-                    return Result(true, true, true, 200, "Registration test succeeded.");
+                    held = accepted.Held;
+                    return accepted;
                 }
 
                 ExplainStatus(finalResponse.StatusCode);
@@ -212,6 +221,11 @@ public sealed class SipDiagnosticEngine
             {
                 Log(DiagnosticLevel.Error, $"Probe failed: {ex.Message}");
                 return Result(networkReachable, false, false, null, "Probe failed.");
+            }
+            finally
+            {
+                if (held is null)
+                    await channel.DisposeAsync();
             }
         }
 
@@ -311,6 +325,40 @@ public sealed class SipDiagnosticEngine
         throw new FormatException("Only provisional SIP responses were received.");
     }
 
+    private async Task<DiagnosticResult> FinishSuccessfulRegistrationAsync(
+        ISipChannel channel,
+        DiagnosticProfile profile,
+        string requestUri,
+        string callId,
+        string fromTag,
+        int cseq,
+        DigestChallenge? challenge,
+        CancellationToken cancellationToken)
+    {
+        if (profile.KeepRegistered)
+        {
+            var held = new HeldRegistration(
+                channel,
+                profile,
+                requestUri,
+                callId,
+                fromTag,
+                cseq,
+                challenge,
+                Log);
+            held.Start();
+            Log(DiagnosticLevel.Success,
+                "Keeping the SIP connection open. Yeastar drops TLS/TCP registrations as soon as this session closes.");
+            Log(DiagnosticLevel.Info,
+                "Confirm the extension on the PBX now. Click Unregister Now when finished.");
+            return Result(true, true, true, 200, "Registered and holding the session open.", held);
+        }
+
+        await TryRemoveDiagnosticBindingAsync(
+            channel, profile, requestUri, callId, fromTag, cseq, challenge, cancellationToken);
+        return Result(true, true, true, 200, "Registration test succeeded.");
+    }
+
     private async Task TryRemoveDiagnosticBindingAsync(
         ISipChannel channel,
         DiagnosticProfile profile,
@@ -396,8 +444,9 @@ public sealed class SipDiagnosticEngine
         bool sipResponseReceived,
         bool registered,
         int? finalStatusCode,
-        string summary) =>
-        new(networkReachable, sipResponseReceived, registered, finalStatusCode, summary, Entries);
+        string summary,
+        IHeldSipRegistration? held = null) =>
+        new(networkReachable, sipResponseReceived, registered, finalStatusCode, summary, Entries, held);
 
     private void Log(DiagnosticLevel level, string message)
     {
@@ -482,6 +531,262 @@ public sealed class SipDiagnosticEngine
 
     private static string FormatHostForUri(string host) =>
         IPAddress.TryParse(host, out var address) ? FormatHost(address) : host;
+
+    private sealed class HeldRegistration : IHeldSipRegistration
+    {
+        private readonly ISipChannel _channel;
+        private readonly DiagnosticProfile _profile;
+        private readonly string _requestUri;
+        private readonly string _callId;
+        private readonly string _fromTag;
+        private readonly DigestChallenge? _challenge;
+        private readonly Action<DiagnosticLevel, string> _log;
+        private readonly SemaphoreSlim _sendLock = new(1, 1);
+        private readonly CancellationTokenSource _alive = new();
+        private Task? _loop;
+        private int _cseq;
+        private int _nonceCount = 2;
+        private bool _dead;
+
+        public HeldRegistration(
+            ISipChannel channel,
+            DiagnosticProfile profile,
+            string requestUri,
+            string callId,
+            string fromTag,
+            int cseq,
+            DigestChallenge? challenge,
+            Action<DiagnosticLevel, string> log)
+        {
+            _channel = channel;
+            _profile = profile;
+            _requestUri = requestUri;
+            _callId = callId;
+            _fromTag = fromTag;
+            _cseq = cseq;
+            _challenge = challenge;
+            _log = log;
+        }
+
+        public bool IsAlive => !_dead && !_alive.IsCancellationRequested;
+        public event Action<DiagnosticLogEntry>? EntryAdded;
+
+        public void Start()
+        {
+            _loop = Task.Run(() => RunAsync(_alive.Token));
+        }
+
+        public async Task UnregisterAsync(CancellationToken cancellationToken = default)
+        {
+            await _alive.CancelAsync();
+            if (_loop is not null)
+            {
+                try { await _loop.WaitAsync(TimeSpan.FromSeconds(3), cancellationToken); }
+                catch { /* receive loop may still be unwinding */ }
+            }
+
+            try
+            {
+                await SendRegisterAsync(expires: 0, cancellationToken).ConfigureAwait(false);
+                var raw = await _channel.ReceiveAsync(cancellationToken).ConfigureAwait(false);
+                var response = SipResponse.Parse(raw);
+                if (response.StatusCode is 401 or 407 && _challenge is not null)
+                {
+                    var retry = DigestChallenge.Parse(
+                        response.GetHeader(response.StatusCode == 407 ? "Proxy-Authenticate" : "WWW-Authenticate") ?? string.Empty,
+                        response.StatusCode == 407);
+                    await SendRegisterAsync(0, cancellationToken, retry).ConfigureAwait(false);
+                    raw = await _channel.ReceiveAsync(cancellationToken).ConfigureAwait(false);
+                    response = SipResponse.Parse(raw);
+                }
+
+                if (response.StatusCode == 200)
+                    Note(DiagnosticLevel.Success, "Unregister succeeded. The diagnostic registration is no longer on the PBX.");
+                else
+                    Note(DiagnosticLevel.Warning, $"Unregister returned SIP {response.StatusCode} {response.ReasonPhrase}.");
+            }
+            catch (Exception ex) when (ex is SocketException or IOException or OperationCanceledException or FormatException)
+            {
+                Note(DiagnosticLevel.Warning, "Could not send unregister; closing the session will drop the binding.");
+            }
+            finally
+            {
+                await DisposeCoreAsync().ConfigureAwait(false);
+            }
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            await _alive.CancelAsync();
+            await DisposeCoreAsync().ConfigureAwait(false);
+        }
+
+        private async Task DisposeCoreAsync()
+        {
+            if (_dead)
+                return;
+            _dead = true;
+            try { await _channel.DisposeAsync(); }
+            catch { /* already closed */ }
+        }
+
+        private async Task RunAsync(CancellationToken token)
+        {
+            var keepalive = KeepaliveAsync(token);
+            try
+            {
+                while (!token.IsCancellationRequested)
+                {
+                    string raw;
+                    try
+                    {
+                        raw = await _channel.ReceiveAsync(token).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        break;
+                    }
+                    catch (Exception ex) when (ex is IOException or SocketException)
+                    {
+                        Note(DiagnosticLevel.Warning,
+                            "The SIP session dropped. Yeastar will show the extension as unregistered until Test SIP Registration is run again.");
+                        _dead = true;
+                        break;
+                    }
+
+                    if (raw.StartsWith("SIP/2.0", StringComparison.OrdinalIgnoreCase))
+                        continue;
+
+                    var firstLine = raw.Split('\r', 2)[0];
+                    if (firstLine.StartsWith("OPTIONS ", StringComparison.OrdinalIgnoreCase) ||
+                        firstLine.StartsWith("NOTIFY ", StringComparison.OrdinalIgnoreCase) ||
+                        firstLine.StartsWith("PING ", StringComparison.OrdinalIgnoreCase) ||
+                        firstLine.StartsWith("INFO ", StringComparison.OrdinalIgnoreCase))
+                    {
+                        await SendLockedAsync(BuildOkForRequest(raw), token).ConfigureAwait(false);
+                        Note(DiagnosticLevel.Detail, "Answered PBX keepalive (" + firstLine.Split(' ')[0] + ").");
+                    }
+                }
+            }
+            finally
+            {
+                try { await keepalive; }
+                catch (OperationCanceledException) { }
+            }
+        }
+
+        private async Task KeepaliveAsync(CancellationToken token)
+        {
+            while (!token.IsCancellationRequested)
+            {
+                await Task.Delay(TimeSpan.FromSeconds(15), token).ConfigureAwait(false);
+                try
+                {
+                    await SendLockedAsync(BuildOptions(), token).ConfigureAwait(false);
+                    Note(DiagnosticLevel.Detail, "Sent SIP OPTIONS keepalive to hold the registration.");
+                }
+                catch (Exception ex) when (ex is IOException or SocketException)
+                {
+                    Note(DiagnosticLevel.Warning, "Keepalive failed: " + ex.Message);
+                    _dead = true;
+                    _alive.Cancel();
+                    break;
+                }
+            }
+        }
+
+        private async Task SendRegisterAsync(int expires, CancellationToken token, DigestChallenge? challenge = null)
+        {
+            challenge ??= _challenge;
+            string? headerName = null;
+            string? headerValue = null;
+            if (challenge is not null)
+            {
+                _nonceCount++;
+                headerName = challenge.IsProxy ? "Proxy-Authorization" : "Authorization";
+                headerValue = challenge.CreateAuthorization(
+                    _profile.EffectiveAuthenticationName,
+                    _profile.Password,
+                    "REGISTER",
+                    _requestUri,
+                    _nonceCount.ToString("00000000"));
+            }
+
+            _cseq++;
+            var message = BuildRegister(
+                _profile with { RegistrationExpirySeconds = expires },
+                _channel.LocalEndPoint,
+                _requestUri,
+                _callId,
+                _fromTag,
+                _cseq,
+                headerName,
+                headerValue);
+            await SendLockedAsync(message.Text, token).ConfigureAwait(false);
+        }
+
+        private async Task SendLockedAsync(string message, CancellationToken token)
+        {
+            await _sendLock.WaitAsync(token).ConfigureAwait(false);
+            try
+            {
+                await _channel.SendAsync(message, token).ConfigureAwait(false);
+            }
+            finally
+            {
+                _sendLock.Release();
+            }
+        }
+
+        private string BuildOptions()
+        {
+            var local = _channel.LocalEndPoint;
+            var transportToken = _profile.Transport.ToString().ToUpperInvariant();
+            var localHost = FormatHost(local.Address);
+            var branch = "z9hG4bK-" + Convert.ToHexString(RandomNumberGenerator.GetBytes(8)).ToLowerInvariant();
+            _cseq++;
+            return
+                $"OPTIONS {_requestUri} SIP/2.0\r\n" +
+                $"Via: SIP/2.0/{transportToken} {localHost}:{local.Port};branch={branch};rport\r\n" +
+                "Max-Forwards: 70\r\n" +
+                $"From: <sip:{_profile.SipUser}@{FormatHostForUri(_profile.Server)}>;tag={_fromTag}\r\n" +
+                $"To: <sip:{_profile.SipUser}@{FormatHostForUri(_profile.Server)}>\r\n" +
+                $"Call-ID: {_callId}\r\n" +
+                $"CSeq: {_cseq} OPTIONS\r\n" +
+                $"Contact: <sip:{_profile.SipUser}@{localHost}:{local.Port};transport={_profile.Transport.ToString().ToLowerInvariant()}>\r\n" +
+                $"User-Agent: {_profile.UserAgent}\r\n" +
+                "Content-Length: 0\r\n\r\n";
+        }
+
+        private static string BuildOkForRequest(string request)
+        {
+            var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var line in request.Split(new[] { "\r\n" }, StringSplitOptions.None).Skip(1))
+            {
+                if (line.Length == 0)
+                    break;
+                var separator = line.IndexOf(':');
+                if (separator > 0)
+                    headers[line[..separator].Trim()] = line[(separator + 1)..].Trim();
+            }
+
+            string H(string name) => headers.TryGetValue(name, out var value) ? value : string.Empty;
+            return
+                "SIP/2.0 200 OK\r\n" +
+                $"Via: {H("Via")}\r\n" +
+                $"From: {H("From")}\r\n" +
+                $"To: {H("To")};tag=sipprobe\r\n" +
+                $"Call-ID: {H("Call-ID")}\r\n" +
+                $"CSeq: {H("CSeq")}\r\n" +
+                "Content-Length: 0\r\n\r\n";
+        }
+
+        private void Note(DiagnosticLevel level, string message)
+        {
+            _log(level, message);
+            EntryAdded?.Invoke(new DiagnosticLogEntry(DateTimeOffset.Now, level, message));
+        }
+    }
 
     private interface ISipChannel : IAsyncDisposable
     {
@@ -639,6 +944,8 @@ public sealed class SipDiagnosticEngine
         private static TcpClient CreateClient(IPAddress address, int localPort)
         {
             var client = new TcpClient(address.AddressFamily);
+            client.NoDelay = true;
+            client.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive, true);
             if (localPort > 0)
             {
                 var any = address.AddressFamily == AddressFamily.InterNetworkV6 ? IPAddress.IPv6Any : IPAddress.Any;

@@ -24,6 +24,8 @@ public sealed record DiagnosticProfile
     public bool ForceTls12 { get; init; } = true;
     public bool IgnoreTlsCertificateErrors { get; init; }
     public bool Authenticate { get; init; } = true;
+    public bool KeepRegistered { get; init; }
+    public bool UnregisterOnly { get; init; }
     public string UserAgent { get; init; } = "InspireTel-SIP-Probe/1.2";
     public IReadOnlyList<string> NtpServers { get; init; } = Array.Empty<string>();
 
@@ -43,7 +45,12 @@ public sealed record DiagnosticProfile
             throw new ArgumentException("SIP user / extension is required.", nameof(SipUser));
         if (LocalPort is < 0 or > 65535)
             throw new ArgumentOutOfRangeException(nameof(LocalPort), "Local port must be 0 or between 1 and 65535.");
-        if (RegistrationExpirySeconds is < 30 or > 86400)
+        if (UnregisterOnly)
+        {
+            if (RegistrationExpirySeconds is not 0)
+                throw new ArgumentOutOfRangeException(nameof(RegistrationExpirySeconds), "Unregister must use expiry 0.");
+        }
+        else if (RegistrationExpirySeconds is < 30 or > 86400)
             throw new ArgumentOutOfRangeException(nameof(RegistrationExpirySeconds), "Expiry must be between 30 and 86400 seconds.");
         if (TimeoutSeconds is < 2 or > 60)
             throw new ArgumentOutOfRangeException(nameof(TimeoutSeconds), "Timeout must be between 2 and 60 seconds.");
@@ -85,10 +92,18 @@ public sealed record DiagnosticLogEntry(DateTimeOffset Timestamp, DiagnosticLeve
     public override string ToString() => $"{Timestamp:HH:mm:ss.fff} [{Level.ToString().ToUpperInvariant(),-7}] {Message}";
 }
 
+public interface IHeldSipRegistration : IAsyncDisposable
+{
+    bool IsAlive { get; }
+    Task UnregisterAsync(CancellationToken cancellationToken = default);
+    event Action<DiagnosticLogEntry>? EntryAdded;
+}
+
 public sealed record DiagnosticResult(
     bool NetworkReachable,
     bool SipResponseReceived,
     bool Registered,
     int? FinalStatusCode,
     string Summary,
-    IReadOnlyList<DiagnosticLogEntry> Entries);
+    IReadOnlyList<DiagnosticLogEntry> Entries,
+    IHeldSipRegistration? Held = null);

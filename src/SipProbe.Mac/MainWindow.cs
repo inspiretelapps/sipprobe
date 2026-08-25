@@ -46,6 +46,32 @@ public sealed class MainWindow : Window
     private readonly Button _stop = new();
     private readonly Button _clear = new();
     private readonly Button _export = new();
+    private readonly Button _unregister = new();
+    private readonly CheckBox _keepRegistered = new()
+    {
+        Content = "Keep Registered On The PBX",
+        IsChecked = true
+    };
+    private readonly Border _resultBanner = new()
+    {
+        CornerRadius = new CornerRadius(10),
+        Padding = new Thickness(14, 12),
+        Margin = new Thickness(12, 12, 12, 0)
+    };
+    private readonly TextBlock _resultTitle = new() { FontSize = 17, FontWeight = FontWeight.SemiBold };
+    private readonly TextBlock _resultDetail = new()
+    {
+        FontSize = 12.5,
+        TextWrapping = TextWrapping.Wrap,
+        Margin = new Thickness(0, 4, 0, 0),
+        Opacity = 0.9
+    };
+    private readonly TextBlock _chipConfigText = new() { FontSize = 11.5, FontWeight = FontWeight.Medium };
+    private readonly TextBlock _chipPathText = new() { FontSize = 11.5, FontWeight = FontWeight.Medium };
+    private readonly TextBlock _chipRegText = new() { FontSize = 11.5, FontWeight = FontWeight.Medium };
+    private readonly Border _chipConfig = new() { CornerRadius = new CornerRadius(8), Padding = new Thickness(8, 5) };
+    private readonly Border _chipPath = new() { CornerRadius = new CornerRadius(8), Padding = new Thickness(8, 5) };
+    private readonly Border _chipReg = new() { CornerRadius = new CornerRadius(8), Padding = new Thickness(8, 5) };
     private readonly ToggleSwitch _darkMode = new()
     {
         OnContent = "Dark",
@@ -66,15 +92,26 @@ public sealed class MainWindow : Window
         FontSize = 12.5
     };
     private readonly Border _header = new();
-    private readonly Border _leftCard = new() { CornerRadius = new CornerRadius(14), Padding = new Thickness(16, 14, 16, 14) };
+    private readonly Border _leftCard = new() { CornerRadius = new CornerRadius(14), Padding = new Thickness(16, 14, 16, 10), ClipToBounds = true };
     private readonly Border _rightCard = new() { CornerRadius = new CornerRadius(14), ClipToBounds = true };
     private readonly Border _logToolbar = new();
     private readonly Border _statusBar = new();
+    private readonly Border _actionDock = new();
+    private readonly Border _advancedPanel = new() { CornerRadius = new CornerRadius(10), Padding = new Thickness(12, 10, 12, 12), Margin = new Thickness(0, 8, 0, 4) };
     private readonly List<TextBlock> _mutedLabels = new();
+    private readonly List<Button> _eyeButtons = new();
+    private readonly List<Border> _infoIcons = new();
+    private readonly List<TextBlock> _infoLetters = new();
 
     private readonly List<DiagnosticLogEntry> _allEntries = new();
     private CancellationTokenSource? _activeRun;
     private bool _applyingTheme;
+    private bool _configLoaded;
+    private string? _configName;
+    private string _pathState = "idle";
+    private string _regState = "idle";
+    private DiagnosticProfile? _heldProfile;
+    private IHeldSipRegistration? _heldSession;
 
     public MainWindow()
     {
@@ -92,11 +129,17 @@ public sealed class MainWindow : Window
         _logScroll.Content = _logLines;
         _stop.IsEnabled = false;
 
-        StyleAction(_loadCfg, "Load phone config", "Reads a Yealink .cfg and fills the fields. The password stays in memory and is never logged.", false);
-        StyleAction(_runMatrix, "Test path", "Tries UDP, TCP and TLS without the password. A 401 means the PBX is reachable. Safe first step — it will not lock the extension.", false);
-        StyleAction(_runRegister, "Prove login", "Sends one authenticated REGISTER with these credentials, then removes it. Use after Test path succeeds.", true);
-        StyleAction(_checkPbx, "Check PBX", "Asks the Yeastar API whether this extension is online, assigned a phone, or on the blocked-IP list. Needs Client ID and Secret under Advanced.", false);
+        StyleAction(_loadCfg, "Load Phone Config", "Reads a Yealink .cfg and fills the fields. The password stays in memory and is never logged.", false);
+        StyleAction(_runMatrix, "Test Path", "Tries UDP, TCP and TLS without the password. A 401 means the PBX is reachable. Safe first step — it will not lock the extension.", false);
+        StyleAction(_runRegister, "Test SIP Registration", "Sends one authenticated REGISTER with these credentials. Tick Keep Registered to leave it on the PBX so you can confirm it in Yeastar.", true);
+        StyleAction(_checkPbx, "Check PBX Status", "Looks up this extension on the Yeastar: online or not, assigned phone, and blocked IPs. Needs Client ID and Secret under Advanced.", false);
         StyleAction(_stop, "Stop", "Cancels the test that is currently running.", false);
+        StyleAction(_unregister, "Unregister Now", "Removes the diagnostic registration from the PBX so the extension is free again.", false);
+        _unregister.IsVisible = false;
+        _chipConfig.Child = _chipConfigText;
+        _chipPath.Child = _chipPathText;
+        _chipReg.Child = _chipRegText;
+        ToolTip.SetTip(_keepRegistered, "If ticked, a successful Test SIP Registration stays on the PBX until Unregister Now or the expiry timer. Use this to confirm the binding in Yeastar.");
         StyleGhost(_clear, "Clear");
         StyleGhost(_export, "Export");
 
@@ -122,6 +165,7 @@ public sealed class MainWindow : Window
         _runRegister.Click += async (_, _) => await RunAuthenticatedAsync();
         _runMatrix.Click += async (_, _) => await RunMatrixAsync();
         _checkPbx.Click += async (_, _) => await RunPbxCheckAsync();
+        _unregister.Click += async (_, _) => await RunUnregisterAsync();
         _loadCfg.Click += async (_, _) => await LoadYealinkConfigAsync();
         _stop.Click += (_, _) => _activeRun?.Cancel();
         _clear.Click += (_, _) => ClearLog();
@@ -136,8 +180,16 @@ public sealed class MainWindow : Window
 
         Content = BuildRoot();
         ApplyChrome();
+        RefreshResultBanner();
         ActualThemeVariantChanged += (_, _) => ApplyChrome();
         AppendWelcome();
+        Closed += (_, _) =>
+        {
+            var held = _heldSession;
+            _heldSession = null;
+            if (held is not null)
+                _ = held.DisposeAsync().AsTask();
+        };
         Opened += async (_, _) =>
         {
             SyncDarkToggle();
@@ -232,7 +284,7 @@ public sealed class MainWindow : Window
         intro.Children.Add(SectionTitle("Endpoint"));
         intro.Children.Add(Muted("Same values as the handset. Load a Yealink cfg if you have one."));
 
-        var fields = new StackPanel { Spacing = 8 };
+        var fields = new StackPanel { Spacing = 16 };
         fields.Children.Add(Labeled("PBX hostname", _server, "DNS name of the Cloud PBX, not an IP, when using TLS."));
         fields.Children.Add(TwoCol(
             Labeled("Transport", _transport, "Must match the extension on the PBX. Yeastar Cloud remote phones usually use TLS."),
@@ -242,31 +294,79 @@ public sealed class MainWindow : Window
             Labeled("Auth name", _authName, "P-Series Registration Name. Often different from the extension number.")));
         fields.Children.Add(Labeled("Password", BuildPasswordField(_password), "Registration password. Never written to the log or export."));
 
-        var advanced = new Expander
-        {
-            Header = "Advanced — extra ports, TLS, PBX API",
-            IsExpanded = false,
-            Margin = new Thickness(0, 6, 0, 0),
-            Content = BuildAdvanced()
-        };
-
+        var advanced = BuildAdvancedSection();
         var mid = new StackPanel { Spacing = 0 };
         mid.Children.Add(fields);
         mid.Children.Add(advanced);
 
-        var actions = BuildActionPanel();
-        Grid.SetRow(mid, 1);
-        Grid.SetRow(actions, 2);
+        var scroller = new ScrollViewer
+        {
+            Content = mid,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled
+        };
+
+        _actionDock.Child = BuildActionPanel();
+        _actionDock.Padding = new Thickness(0, 10, 0, 0);
+        Grid.SetRow(scroller, 1);
+        Grid.SetRow(_actionDock, 2);
         panel.Children.Add(intro);
-        panel.Children.Add(mid);
-        panel.Children.Add(actions);
+        panel.Children.Add(scroller);
+        panel.Children.Add(_actionDock);
         return panel;
+    }
+
+    private Control BuildAdvancedSection()
+    {
+        var header = new Grid { ColumnDefinitions = ColumnDefinitions.Parse("*,Auto") };
+        var title = new TextBlock
+        {
+            Text = "Advanced",
+            FontSize = 12.5,
+            FontWeight = FontWeight.SemiBold,
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        var chevron = new TextBlock
+        {
+            Text = "Show extra ports, TLS and PBX API",
+            FontSize = 11.5,
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        _mutedLabels.Add(title);
+        _mutedLabels.Add(chevron);
+        Grid.SetColumn(chevron, 1);
+        header.Children.Add(title);
+        header.Children.Add(chevron);
+
+        var body = BuildAdvanced();
+        body.IsVisible = false;
+        body.Margin = new Thickness(0, 10, 0, 0);
+
+        var toggle = new Button
+        {
+            Background = Brushes.Transparent,
+            BorderThickness = new Thickness(0),
+            Padding = new Thickness(2, 0),
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            HorizontalContentAlignment = HorizontalAlignment.Stretch,
+            Content = header
+        };
+        toggle.Click += (_, _) =>
+        {
+            body.IsVisible = !body.IsVisible;
+            chevron.Text = body.IsVisible ? "Hide" : "Show extra ports, TLS and PBX API";
+        };
+
+        var stack = new StackPanel();
+        stack.Children.Add(toggle);
+        stack.Children.Add(body);
+        _advancedPanel.Child = stack;
+        return _advancedPanel;
     }
 
     private Control BuildAdvanced()
     {
-        var stack = new StackPanel { Spacing = 8, Margin = new Thickness(0, 8, 0, 4) };
-        stack.Children.Add(Muted("These stay hidden for the usual cfg workflow."));
+        var stack = new StackPanel { Spacing = 14 };
         stack.Children.Add(ThreeCol(
             Labeled("Local port", _localPort, "0 = automatic. Change only if you are testing a specific source port."),
             Labeled("Expiry", _expiry, "REGISTER Expires. Yeastar Cloud minimum is often 600."),
@@ -296,23 +396,35 @@ public sealed class MainWindow : Window
         return stack;
     }
 
-    private static Control BuildPasswordField(TextBox password)
+    private Control BuildPasswordField(TextBox password)
     {
-        var show = new Button
+        password.Padding = new Thickness(10, 0, 36, 0);
+        var revealed = false;
+        var eye = new Button
         {
-            Content = "Show",
-            Width = 58,
+            Width = 30,
             Height = 30,
-            Padding = new Thickness(0)
+            Padding = new Thickness(0),
+            Background = Brushes.Transparent,
+            BorderThickness = new Thickness(0),
+            HorizontalAlignment = HorizontalAlignment.Right,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(0, 0, 4, 0),
+            Content = EyeIcon(false)
         };
-        show.PointerPressed += (_, _) => password.PasswordChar = '\0';
-        show.PointerReleased += (_, _) => password.PasswordChar = '•';
-        show.PointerExited += (_, _) => password.PasswordChar = '•';
-        var row = new Grid { ColumnDefinitions = ColumnDefinitions.Parse("*,6,Auto") };
-        Grid.SetColumn(show, 2);
-        row.Children.Add(password);
-        row.Children.Add(show);
-        return row;
+        ToolTip.SetTip(eye, "Show password");
+        eye.Click += (_, _) =>
+        {
+            revealed = !revealed;
+            password.PasswordChar = revealed ? '\0' : '•';
+            eye.Content = EyeIcon(revealed);
+            ToolTip.SetTip(eye, revealed ? "Hide password" : "Show password");
+        };
+        _eyeButtons.Add(eye);
+        var host = new Grid();
+        host.Children.Add(password);
+        host.Children.Add(eye);
+        return host;
     }
 
     private Control BuildActionPanel()
@@ -320,23 +432,44 @@ public sealed class MainWindow : Window
         var grid = new Grid
         {
             ColumnDefinitions = ColumnDefinitions.Parse("*,10,*"),
-            RowDefinitions = RowDefinitions.Parse("Auto,8,Auto,8,Auto"),
+            RowDefinitions = RowDefinitions.Parse("Auto,8,Auto,8,Auto,8,Auto"),
             Margin = new Thickness(0, 14, 0, 0)
         };
         Place(grid, _loadCfg, 0, 0);
         Place(grid, _runMatrix, 0, 2);
         Place(grid, _runRegister, 2, 0);
         Place(grid, _checkPbx, 2, 2);
+        Grid.SetColumnSpan(_keepRegistered, 3);
+        Place(grid, _keepRegistered, 4, 0);
         Grid.SetColumnSpan(_stop, 3);
-        Place(grid, _stop, 4, 0);
-        foreach (var button in new[] { _loadCfg, _runMatrix, _runRegister, _checkPbx, _stop })
+        Place(grid, _stop, 6, 0);
+        Grid.SetColumnSpan(_unregister, 3);
+        Place(grid, _unregister, 6, 0);
+        foreach (var button in new[] { _loadCfg, _runMatrix, _runRegister, _checkPbx, _stop, _unregister })
             button.HorizontalAlignment = HorizontalAlignment.Stretch;
         return grid;
     }
 
     private Control BuildLogPanel()
     {
-        var panel = new Grid { RowDefinitions = RowDefinitions.Parse("48,*") };
+        var panel = new Grid { RowDefinitions = RowDefinitions.Parse("Auto,48,*") };
+        var chips = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 8,
+            Margin = new Thickness(12, 12, 12, 0)
+        };
+        chips.Children.Add(_chipConfig);
+        chips.Children.Add(_chipPath);
+        chips.Children.Add(_chipReg);
+        var headline = new StackPanel { Spacing = 0 };
+        headline.Children.Add(_resultTitle);
+        headline.Children.Add(_resultDetail);
+        _resultBanner.Child = headline;
+        var top = new StackPanel { Spacing = 0 };
+        top.Children.Add(chips);
+        top.Children.Add(_resultBanner);
+
         var toolbar = new Grid { ColumnDefinitions = ColumnDefinitions.Parse("*,Auto,Auto"), Margin = new Thickness(14, 0) };
         var title = new TextBlock
         {
@@ -352,11 +485,16 @@ public sealed class MainWindow : Window
         toolbar.Children.Add(title);
         toolbar.Children.Add(_clear);
         toolbar.Children.Add(_export);
+        _logLines.HorizontalAlignment = HorizontalAlignment.Left;
+        _logLines.Margin = new Thickness(14, 10, 18, 12);
         _logToolbar.Child = toolbar;
         _logToolbar.Background = new SolidColorBrush(Color.FromRgb(16, 28, 30));
         _logScroll.Background = new SolidColorBrush(Color.FromRgb(10, 18, 20));
-        _logScroll.Padding = new Thickness(12, 8);
-        Grid.SetRow(_logScroll, 1);
+        _logScroll.HorizontalScrollBarVisibility = ScrollBarVisibility.Auto;
+        _logScroll.VerticalScrollBarVisibility = ScrollBarVisibility.Auto;
+        Grid.SetRow(_logToolbar, 1);
+        Grid.SetRow(_logScroll, 2);
+        panel.Children.Add(top);
         panel.Children.Add(_logToolbar);
         panel.Children.Add(_logScroll);
         return panel;
@@ -396,7 +534,7 @@ public sealed class MainWindow : Window
             return;
         }
 
-        AppendSeparator($"PROVE LOGIN  {profile.Transport.ToString().ToUpperInvariant()}");
+        AppendSeparator($"TEST SIP REGISTRATION  {profile.Transport.ToString().ToUpperInvariant()}");
         await RunOneAsync(profile);
     }
 
@@ -415,6 +553,8 @@ public sealed class MainWindow : Window
 
         SetRunning(true, "Testing UDP, TCP and TLS without a password...");
         _activeRun = new CancellationTokenSource();
+        var anyReachable = false;
+        var allReachable = true;
         try
         {
             foreach (var item in baseProfile.MatrixTargets())
@@ -428,9 +568,13 @@ public sealed class MainWindow : Window
                     Authenticate = false,
                     Password = string.Empty
                 };
-                await ExecuteEngineAsync(profile, _activeRun.Token);
+                var result = await ExecuteEngineAsync(profile, _activeRun.Token);
+                anyReachable |= result.SipResponseReceived;
+                allReachable &= result.SipResponseReceived;
             }
-            _status.Text = "Path test complete";
+            _pathState = allReachable ? "ok" : anyReachable ? "partial" : "fail";
+            _status.Text = allReachable ? "Path Reachable" : anyReachable ? "Path Partially Reachable" : "Path Failed";
+            RefreshResultBanner();
         }
         catch (OperationCanceledException)
         {
@@ -452,11 +596,23 @@ public sealed class MainWindow : Window
         try
         {
             var result = await ExecuteEngineAsync(profile, _activeRun.Token);
-            _status.Text = result.Registered
-                ? "Login succeeded"
-                : result.SipResponseReceived
-                    ? $"PBX replied {result.FinalStatusCode}"
+            if (result.Registered)
+            {
+                await ReplaceHeldSessionAsync(result.Held);
+                _regState = result.Held is not null ? "held" : "ok";
+                _heldProfile = result.Held is not null ? profile : null;
+                _status.Text = result.Held is not null ? "Registered — Session Held Open" : "Registered";
+            }
+            else
+            {
+                _regState = "fail";
+                await ReplaceHeldSessionAsync(null);
+                _heldProfile = null;
+                _status.Text = result.SipResponseReceived
+                    ? $"Registration Failed ({result.FinalStatusCode})"
                     : result.Summary;
+            }
+            RefreshResultBanner();
         }
         catch (OperationCanceledException)
         {
@@ -513,7 +669,8 @@ public sealed class MainWindow : Window
                 AuthenticationName = _authName.Text ?? string.Empty,
                 TimeoutSeconds = (int)(_timeout.Value ?? 7)
             }, _activeRun.Token);
-            _status.Text = "PBX check complete";
+            _status.Text = "PBX Status Checked";
+            RefreshResultBanner();
         }
         catch (OperationCanceledException)
         {
@@ -550,6 +707,7 @@ public sealed class MainWindow : Window
         ForceTls12 = _forceTls12.IsChecked == true,
         IgnoreTlsCertificateErrors = _ignoreCertificateErrors.IsChecked == true,
         Authenticate = authenticate,
+        KeepRegistered = _keepRegistered.IsChecked == true,
         NtpServers = _ntpServers
     };
 
@@ -569,7 +727,11 @@ public sealed class MainWindow : Window
         _runMatrix.IsEnabled = !running;
         _checkPbx.IsEnabled = !running;
         _loadCfg.IsEnabled = !running;
+        _keepRegistered.IsEnabled = !running;
         _stop.IsEnabled = running;
+        _stop.IsVisible = running || _heldProfile is null;
+        _unregister.IsVisible = !running && _heldProfile is not null;
+        _unregister.IsEnabled = !running && _heldProfile is not null;
         _transport.IsEnabled = !running;
         _status.Text = status;
         Cursor = running ? new Cursor(StandardCursorType.Wait) : Cursor.Default;
@@ -577,8 +739,8 @@ public sealed class MainWindow : Window
 
     private void AppendWelcome()
     {
-        AppendLocal(DiagnosticLevel.Info, "Load a phone config, then Test path. A 401 means the PBX is reachable. Then Prove login.");
-        AppendLocal(DiagnosticLevel.Detail, "Hover the ⓘ on a button for what it does. Passwords are never logged.");
+        AppendLocal(DiagnosticLevel.Info, "Load Phone Config, then Test Path. A 401 means the PBX is reachable. Then Test SIP Registration.");
+        AppendLocal(DiagnosticLevel.Detail, "Tick Keep Registered On The PBX if you want to confirm the binding in Yeastar. Passwords are never logged.");
     }
 
     private void AppendSeparator(string title)
@@ -614,7 +776,9 @@ public sealed class MainWindow : Window
             Foreground = new SolidColorBrush(color),
             FontFamily = new FontFamily("IBM Plex Mono, Menlo, SF Mono, ui-monospace, monospace"),
             FontSize = 12,
-            TextWrapping = TextWrapping.NoWrap
+            TextWrapping = TextWrapping.NoWrap,
+            TextTrimming = TextTrimming.None,
+            HorizontalAlignment = HorizontalAlignment.Left
         });
     }
 
@@ -742,7 +906,182 @@ public sealed class MainWindow : Window
             AppendLocal(finding.Level, finding.Message);
         foreach (var warning in settings.Warnings())
             AppendLocal(warning.Level, warning.Message);
-        _status.Text = $"Loaded {Path.GetFileName(path)}";
+        _configLoaded = true;
+        _configName = Path.GetFileName(path);
+        _status.Text = $"Config Loaded — {_configName}";
+        RefreshResultBanner();
+        ApplyChrome();
+    }
+
+    private async Task RunUnregisterAsync()
+    {
+        if (_heldSession is null)
+            return;
+
+        AppendSeparator("UNREGISTER");
+        SetRunning(true, "Removing diagnostic registration...");
+        _activeRun = new CancellationTokenSource();
+        try
+        {
+            _heldSession.EntryAdded += OnHeldLog;
+            await _heldSession.UnregisterAsync(_activeRun.Token);
+            _heldProfile = null;
+            _heldSession = null;
+            _regState = "ok";
+            _status.Text = "Unregistered";
+            RefreshResultBanner();
+        }
+        catch (OperationCanceledException)
+        {
+            AppendLocal(DiagnosticLevel.Warning, "Unregister cancelled.");
+            _status.Text = "Cancelled";
+        }
+        finally
+        {
+            _activeRun.Dispose();
+            _activeRun = null;
+            SetRunning(false, _status.Text ?? "Ready");
+        }
+    }
+
+    private void RefreshResultBanner()
+    {
+        PaintChip(_chipConfig, _chipConfigText,
+            _configLoaded ? "ok" : "idle",
+            _configLoaded ? $"✓  Config Loaded" : "Config");
+        PaintChip(_chipPath, _chipPathText, _pathState, _pathState switch
+        {
+            "ok" => "✓  Path Reachable",
+            "partial" => "Path Partial",
+            "fail" => "Path Failed",
+            _ => "Path"
+        });
+        PaintChip(_chipReg, _chipRegText, _regState, _regState switch
+        {
+            "ok" => "✓  Registered",
+            "held" => "✓  Registered",
+            "fail" => "Registration Failed",
+            _ => "SIP Registration"
+        });
+
+        if (_regState == "held")
+        {
+            _resultBanner.IsVisible = true;
+            _resultBanner.Background = new SolidColorBrush(Color.FromRgb(14, 64, 52));
+            _resultTitle.Text = "Passed — Registered";
+            _resultTitle.Foreground = new SolidColorBrush(Color.FromRgb(110, 232, 180));
+            _resultDetail.Text = "The SIP session is being held open. Yeastar only shows TLS registrations while this connection stays up. Confirm it now, then click Unregister Now.";
+            _resultDetail.Foreground = new SolidColorBrush(Color.FromRgb(186, 230, 210));
+        }
+        else if (_regState == "ok")
+        {
+            _resultBanner.IsVisible = true;
+            _resultBanner.Background = new SolidColorBrush(Color.FromRgb(14, 64, 52));
+            _resultTitle.Text = "Passed — Registered";
+            _resultTitle.Foreground = new SolidColorBrush(Color.FromRgb(110, 232, 180));
+            _resultDetail.Text = "SIP registration succeeded and was then removed. Tick Keep Registered On The PBX to leave it visible in Yeastar.";
+            _resultDetail.Foreground = new SolidColorBrush(Color.FromRgb(186, 230, 210));
+        }
+        else if (_regState == "fail")
+        {
+            _resultBanner.IsVisible = true;
+            _resultBanner.Background = new SolidColorBrush(Color.FromRgb(72, 24, 24));
+            _resultTitle.Text = "Registration Failed";
+            _resultTitle.Foreground = new SolidColorBrush(Color.FromRgb(252, 165, 165));
+            _resultDetail.Text = "The PBX rejected or did not complete SIP registration. Read the live trace for the SIP code.";
+            _resultDetail.Foreground = new SolidColorBrush(Color.FromRgb(254, 202, 202));
+        }
+        else if (_pathState == "ok")
+        {
+            _resultBanner.IsVisible = true;
+            _resultBanner.Background = new SolidColorBrush(Color.FromRgb(14, 52, 64));
+            _resultTitle.Text = "Passed — Path Reachable";
+            _resultTitle.Foreground = new SolidColorBrush(Color.FromRgb(125, 211, 252));
+            _resultDetail.Text = "The PBX answered on the tested transports. Next: Test SIP Registration.";
+            _resultDetail.Foreground = new SolidColorBrush(Color.FromRgb(186, 220, 232));
+        }
+        else if (_pathState == "fail")
+        {
+            _resultBanner.IsVisible = true;
+            _resultBanner.Background = new SolidColorBrush(Color.FromRgb(72, 24, 24));
+            _resultTitle.Text = "Path Failed";
+            _resultTitle.Foreground = new SolidColorBrush(Color.FromRgb(252, 165, 165));
+            _resultDetail.Text = "No usable SIP response. Check DNS, firewall, port and transport.";
+            _resultDetail.Foreground = new SolidColorBrush(Color.FromRgb(254, 202, 202));
+        }
+        else if (_configLoaded)
+        {
+            _resultBanner.IsVisible = true;
+            _resultBanner.Background = new SolidColorBrush(Color.FromRgb(14, 64, 52));
+            _resultTitle.Text = "Config Loaded";
+            _resultTitle.Foreground = new SolidColorBrush(Color.FromRgb(110, 232, 180));
+            _resultDetail.Text = _configName is null
+                ? "Phone configuration is in the fields."
+                : $"{_configName} is loaded. Next: Test Path, then Test SIP Registration.";
+            _resultDetail.Foreground = new SolidColorBrush(Color.FromRgb(186, 230, 210));
+        }
+        else
+        {
+            _resultBanner.IsVisible = false;
+        }
+
+        _unregister.IsVisible = _heldProfile is not null && _activeRun is null;
+        _stop.IsVisible = _activeRun is not null || _heldProfile is null;
+    }
+
+    private async Task ReplaceHeldSessionAsync(IHeldSipRegistration? next)
+    {
+        if (_heldSession is not null)
+        {
+            _heldSession.EntryAdded -= OnHeldLog;
+            try { await _heldSession.DisposeAsync(); }
+            catch { /* previous session already gone */ }
+        }
+
+        _heldSession = next;
+        if (_heldSession is not null)
+            _heldSession.EntryAdded += OnHeldLog;
+    }
+
+    private void OnHeldLog(DiagnosticLogEntry entry)
+    {
+        Dispatcher.UIThread.Post(() =>
+        {
+            AppendEntry(entry);
+            if (_heldSession is { IsAlive: false })
+            {
+                _heldSession = null;
+                _heldProfile = null;
+                _regState = "fail";
+                _status.Text = "Registration Dropped";
+                RefreshResultBanner();
+            }
+        });
+    }
+
+    private static void PaintChip(Border chip, TextBlock label, string state, string text)
+    {
+        label.Text = text;
+        switch (state)
+        {
+            case "ok":
+            case "held":
+                chip.Background = new SolidColorBrush(Color.FromRgb(14, 64, 52));
+                label.Foreground = new SolidColorBrush(Color.FromRgb(110, 232, 180));
+                break;
+            case "partial":
+                chip.Background = new SolidColorBrush(Color.FromRgb(64, 48, 14));
+                label.Foreground = new SolidColorBrush(Color.FromRgb(252, 211, 77));
+                break;
+            case "fail":
+                chip.Background = new SolidColorBrush(Color.FromRgb(72, 24, 24));
+                label.Foreground = new SolidColorBrush(Color.FromRgb(252, 165, 165));
+                break;
+            default:
+                chip.Background = new SolidColorBrush(Color.FromRgb(28, 40, 42));
+                label.Foreground = new SolidColorBrush(Color.FromRgb(148, 163, 168));
+                break;
+        }
     }
 
     private async Task ShowAlert(string title, string message)
@@ -782,25 +1121,49 @@ public sealed class MainWindow : Window
             _leftCard.Background = dark ? Rgb(24, 31, 32) : Brushes.White;
             _leftCard.BorderBrush = dark ? Rgb(42, 54, 55) : Rgb(214, 224, 221);
             _leftCard.BorderThickness = new Thickness(1);
+            _actionDock.Background = dark ? Rgb(24, 31, 32) : Brushes.White;
+            _actionDock.BorderBrush = dark ? Rgb(42, 54, 55) : Rgb(214, 224, 221);
+            _actionDock.BorderThickness = new Thickness(0, 1, 0, 0);
+            _actionDock.ZIndex = 2;
+            _advancedPanel.Background = dark ? Rgb(18, 24, 25) : Rgb(243, 247, 246);
+            _advancedPanel.BorderBrush = dark ? Rgb(42, 54, 55) : Rgb(214, 224, 221);
+            _advancedPanel.BorderThickness = new Thickness(1);
             _rightCard.BorderBrush = dark ? Rgb(20, 40, 42) : Rgb(16, 28, 30);
             _rightCard.BorderThickness = new Thickness(1);
             _statusBar.Background = dark ? Rgb(14, 18, 19) : Rgb(232, 238, 236);
             _title.Foreground = dark ? Rgb(236, 245, 243) : Rgb(12, 32, 34);
             _subtitle.Foreground = dark ? Rgb(156, 178, 176) : Rgb(90, 110, 108);
             _status.Foreground = dark ? Rgb(156, 178, 176) : Rgb(90, 110, 108);
+            var muted = dark ? Rgb(140, 160, 158) : Rgb(100, 118, 116);
             foreach (var label in _mutedLabels)
-                label.Foreground = dark ? Rgb(140, 160, 158) : Rgb(100, 118, 116);
-            StyleAction(_runRegister, "Prove login",
-                "Sends one authenticated REGISTER with these credentials, then removes it. Use after Test path succeeds.", true, dark);
-            StyleAction(_runMatrix, "Test path",
+                label.Foreground = muted;
+            foreach (var icon in _infoIcons)
+                icon.BorderBrush = muted;
+            foreach (var letter in _infoLetters)
+                letter.Foreground = muted;
+            StyleAction(_runRegister, "Test SIP Registration",
+                "Sends one authenticated REGISTER with these credentials. Tick Keep Registered On The PBX so you can confirm it in Yeastar.", true, dark);
+            StyleAction(_runMatrix, "Test Path",
                 "Tries UDP, TCP and TLS without the password. A 401 means the PBX is reachable. Safe first step — it will not lock the extension.", false, dark);
-            StyleAction(_loadCfg, "Load phone config",
-                "Reads a Yealink .cfg and fills the fields. The password stays in memory and is never logged.", false, dark);
-            StyleAction(_checkPbx, "Check PBX",
-                "Asks the Yeastar API whether this extension is online, assigned a phone, or on the blocked-IP list. Needs Client ID and Secret under Advanced.", false, dark);
+            StyleAction(_loadCfg, "Load Phone Config",
+                "Reads a Yealink .cfg and fills the fields. The password stays in memory and is never logged.", false, dark, _configLoaded);
+            StyleAction(_checkPbx, "Check PBX Status",
+                "Looks up this extension on the Yeastar: online or not, assigned phone, and blocked IPs. Needs Client ID and Secret under Advanced.", false, dark);
             StyleAction(_stop, "Stop", "Cancels the test that is currently running.", false, dark);
+            StyleAction(_unregister, "Unregister Now",
+                "Removes the diagnostic registration from the PBX so the extension is free again.", false, dark);
+            _keepRegistered.Foreground = dark ? Rgb(210, 230, 226) : Rgb(24, 42, 44);
             StyleGhost(_clear, "Clear", dark);
             StyleGhost(_export, "Export", dark);
+            var eyeFill = dark ? Rgb(156, 178, 176) : Rgb(90, 110, 108);
+            foreach (var eye in _eyeButtons)
+            {
+                if (eye.Content is Avalonia.Controls.Shapes.Path path)
+                {
+                    path.Stroke = eyeFill;
+                    path.Fill = Brushes.Transparent;
+                }
+            }
         }
         finally
         {
@@ -819,30 +1182,70 @@ public sealed class MainWindow : Window
 
     private Control Labeled(string title, Control field, string tip)
     {
-        var caption = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
-        var text = new TextBlock { Text = title, FontSize = 11.5, FontWeight = FontWeight.Medium };
+        var text = new TextBlock
+        {
+            Text = title,
+            FontSize = 12,
+            FontWeight = FontWeight.Medium,
+            VerticalAlignment = VerticalAlignment.Center
+        };
         _mutedLabels.Add(text);
+        var caption = new DockPanel { LastChildFill = false, Height = 18 };
+        DockPanel.SetDock(text, Dock.Left);
+        var info = InfoIcon(tip);
+        DockPanel.SetDock(info, Dock.Left);
+        info.Margin = new Thickness(6, 0, 0, 0);
         caption.Children.Add(text);
-        caption.Children.Add(InfoIcon(tip));
-        var stack = new StackPanel { Spacing = 3 };
+        caption.Children.Add(info);
+        var stack = new StackPanel { Spacing = 6 };
         stack.Children.Add(caption);
         stack.Children.Add(field);
         ToolTip.SetTip(field, tip);
         return stack;
     }
 
-    private static Control InfoIcon(string tip)
+    private Control InfoIcon(string tip)
     {
-        var icon = new TextBlock
+        var letter = new TextBlock
         {
-            Text = "ⓘ",
-            FontSize = 11,
-            Opacity = 0.55,
+            Text = "i",
+            FontSize = 9,
+            FontWeight = FontWeight.Bold,
+            HorizontalAlignment = HorizontalAlignment.Center,
             VerticalAlignment = VerticalAlignment.Center
         };
+        var icon = new Border
+        {
+            Width = 14,
+            Height = 14,
+            CornerRadius = new CornerRadius(7),
+            BorderThickness = new Thickness(1.15),
+            VerticalAlignment = VerticalAlignment.Center,
+            Child = letter
+        };
+        _infoIcons.Add(icon);
+        _infoLetters.Add(letter);
         ToolTip.SetTip(icon, tip);
         ToolTip.SetShowDelay(icon, 150);
         return icon;
+    }
+
+    private static Avalonia.Controls.Shapes.Path EyeIcon(bool revealed)
+    {
+        var data = revealed
+            ? "M 2,3 L 22,17 M 4.2,6.2 C 2.4,7.8 1.4,10 1.4,10 C 1.4,10 5.2,17.2 12,17.2 C 14.2,17.2 16.1,16.5 17.6,15.5 M 9.2,4.1 C 10.1,3.8 11,3.6 12,3.6 C 18.8,3.6 22.6,10.8 22.6,10.8 C 22.6,10.8 21.7,12.4 20.1,13.8 M 9.8,10.2 A 2.4,2.4 0 0 0 14.2,12.8"
+            : "M 1.6,10 C 1.6,10 5.4,3.6 12,3.6 C 18.6,3.6 22.4,10 22.4,10 C 22.4,10 18.6,16.4 12,16.4 C 5.4,16.4 1.6,10 1.6,10 Z M 12,8 A 2.2,2.2 0 1 1 12,12.4 A 2.2,2.2 0 1 1 12,8 Z";
+        return new Avalonia.Controls.Shapes.Path
+        {
+            Data = Geometry.Parse(data),
+            Stroke = Rgb(140, 160, 158),
+            StrokeThickness = 1.4,
+            StrokeLineCap = PenLineCap.Round,
+            Fill = revealed ? Brushes.Transparent : Brushes.Transparent,
+            Width = 18,
+            Height = 14,
+            Stretch = Stretch.Uniform
+        };
     }
 
     private TextBlock Muted(string text)
@@ -863,7 +1266,7 @@ public sealed class MainWindow : Window
 
     private static Control TwoCol(Control left, Control right)
     {
-        var grid = new Grid { ColumnDefinitions = ColumnDefinitions.Parse("*,10,*") };
+        var grid = new Grid { ColumnDefinitions = ColumnDefinitions.Parse("*,14,*") };
         Grid.SetColumn(right, 2);
         grid.Children.Add(left);
         grid.Children.Add(right);
@@ -872,7 +1275,7 @@ public sealed class MainWindow : Window
 
     private static Control ThreeCol(Control a, Control b, Control c)
     {
-        var grid = new Grid { ColumnDefinitions = ColumnDefinitions.Parse("*,8,*,8,*") };
+        var grid = new Grid { ColumnDefinitions = ColumnDefinitions.Parse("*,12,*,12,*") };
         Grid.SetColumn(b, 2);
         Grid.SetColumn(c, 4);
         grid.Children.Add(a);
@@ -888,7 +1291,7 @@ public sealed class MainWindow : Window
         grid.Children.Add(child);
     }
 
-    private static void StyleAction(Button button, string title, string tip, bool primary, bool dark = false)
+    private static void StyleAction(Button button, string title, string tip, bool primary, bool dark = false, bool loaded = false)
     {
         var label = new TextBlock
         {
@@ -904,13 +1307,26 @@ public sealed class MainWindow : Window
             Opacity = 0.7,
             VerticalAlignment = VerticalAlignment.Center
         };
-        button.Content = new StackPanel
+        var content = new StackPanel
         {
             Orientation = Orientation.Horizontal,
             Spacing = 7,
-            HorizontalAlignment = HorizontalAlignment.Center,
-            Children = { label, info }
+            HorizontalAlignment = HorizontalAlignment.Center
         };
+        if (loaded)
+        {
+            content.Children.Add(new TextBlock
+            {
+                Text = "✓",
+                FontSize = 15,
+                FontWeight = FontWeight.Bold,
+                Foreground = new SolidColorBrush(Color.FromRgb(52, 211, 153)),
+                VerticalAlignment = VerticalAlignment.Center
+            });
+        }
+        content.Children.Add(label);
+        content.Children.Add(info);
+        button.Content = content;
         button.Height = primary ? 44 : 38;
         button.CornerRadius = new CornerRadius(10);
         button.BorderThickness = primary ? new Thickness(0) : new Thickness(1);
@@ -961,7 +1377,9 @@ public sealed class MainWindow : Window
         Increment = 1,
         FormatString = "0",
         HorizontalAlignment = HorizontalAlignment.Stretch,
-        MinHeight = 34
+        MinHeight = 34,
+        ShowButtonSpinner = false,
+        AllowSpin = true
     };
 
     private static SolidColorBrush Accent() => new(Color.FromRgb(14, 122, 122));
@@ -971,9 +1389,10 @@ public sealed class MainWindow : Window
     private const string InterpretationText =
         "TEST PATH — tries UDP, TCP and TLS without a password.\n" +
         "A 401/407 is success: the PBX is reachable and return traffic works.\n\n" +
-        "PROVE LOGIN — one authenticated REGISTER, then it unregisters.\n" +
-        "200 OK means credentials work from this computer; look at the handset next.\n\n" +
-        "CHECK PBX — Yeastar API: extension online, assigned phone, blocked IPs.\n\n" +
+        "TEST SIP REGISTRATION — one authenticated REGISTER.\n" +
+        "Tick Keep Registered On The PBX to leave it visible in Yeastar, then Unregister Now.\n" +
+        "200 OK means credentials work from this computer.\n\n" +
+        "CHECK PBX STATUS — Yeastar API: extension online, assigned phone, blocked IPs.\n\n" +
         "DNS fails — wrong hostname or DNS policy.\n" +
         "TCP/TLS connect fails — firewall, ISP, wrong port, or service down.\n" +
         "TLS handshake fails — certificate, clock, or TLS inspection.\n" +
