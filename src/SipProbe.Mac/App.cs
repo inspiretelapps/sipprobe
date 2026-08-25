@@ -9,7 +9,7 @@ public sealed class App : Application
 {
     public override void Initialize()
     {
-        RequestedThemeVariant = ThemeVariant.Light;
+        RequestedThemeVariant = ThemeVariant.Default;
         Styles.Add(new FluentTheme());
     }
 

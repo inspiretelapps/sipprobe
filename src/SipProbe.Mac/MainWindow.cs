@@ -5,6 +5,7 @@ using Avalonia.Input;
 using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Platform.Storage;
+using Avalonia.Styling;
 using Avalonia.Threading;
 using InspireTel.SipProbe.Core;
 
@@ -14,7 +15,7 @@ public sealed class MainWindow : Window
 {
     private readonly TextBox _server = Field("pbx.example.com");
     private readonly NumericUpDown _port = NumberField(1, 65535, 5061);
-    private readonly ComboBox _transport = new() { HorizontalAlignment = HorizontalAlignment.Stretch };
+    private readonly ComboBox _transport = new() { HorizontalAlignment = HorizontalAlignment.Stretch, MinHeight = 34 };
     private readonly TextBox _sipUser = Field("Extension / SIP user");
     private readonly TextBox _authName = Field("Registration / authentication name");
     private readonly TextBox _password = Field("Not saved or logged");
@@ -22,11 +23,7 @@ public sealed class MainWindow : Window
     private readonly NumericUpDown _expiry = NumberField(30, 86400, 600);
     private readonly NumericUpDown _timeout = NumberField(2, 60, 7);
     private readonly CheckBox _forceTls12 = new() { Content = "Force TLS 1.2", IsChecked = true };
-    private readonly CheckBox _ignoreCertificateErrors = new()
-    {
-        Content = "Ignore certificate errors (diagnostic only)",
-        Foreground = Rgb(170, 60, 45)
-    };
+    private readonly CheckBox _ignoreCertificateErrors = new() { Content = "Ignore certificate errors (diagnostic only)" };
     private readonly NumericUpDown _udpPort = NumberField(1, 65535, 5060);
     private readonly NumericUpDown _tcpPort = NumberField(1, 65535, 5060);
     private readonly NumericUpDown _tlsPort = NumberField(1, 65535, 5061);
@@ -38,44 +35,70 @@ public sealed class MainWindow : Window
     private readonly StackPanel _logLines = new() { Spacing = 1 };
     private readonly ScrollViewer _logScroll = new()
     {
-        Background = Rgb(20, 25, 31),
         HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
         VerticalScrollBarVisibility = ScrollBarVisibility.Auto
     };
 
-    private readonly Button _runRegister = PrimaryButton("Run authenticated REGISTER");
-    private readonly Button _runMatrix = SecondaryButton("Run transport matrix (no auth)");
-    private readonly Button _checkPbx = SecondaryButton("Check PBX status");
-    private readonly Button _loadCfg = SecondaryButton("Load Yealink .cfg");
-    private readonly Button _stop = SecondaryButton("Stop");
-    private readonly Button _clear = SecondaryButton("Clear log");
-    private readonly Button _export = SecondaryButton("Export log");
+    private readonly Button _runRegister = new();
+    private readonly Button _runMatrix = new();
+    private readonly Button _checkPbx = new();
+    private readonly Button _loadCfg = new();
+    private readonly Button _stop = new();
+    private readonly Button _clear = new();
+    private readonly Button _export = new();
+    private readonly ToggleSwitch _darkMode = new()
+    {
+        OnContent = "Dark",
+        OffContent = "Light",
+        VerticalAlignment = VerticalAlignment.Center
+    };
+
     private readonly TextBlock _status = new()
     {
         Text = "Ready",
         VerticalAlignment = VerticalAlignment.Center,
-        Foreground = Rgb(71, 85, 105)
+        TextTrimming = TextTrimming.CharacterEllipsis
     };
+    private readonly TextBlock _title = new() { Text = "SIP Probe", FontSize = 22, FontWeight = FontWeight.SemiBold, LetterSpacing = -0.4 };
+    private readonly TextBlock _subtitle = new()
+    {
+        Text = "Find out why a handset will not register — without guessing.",
+        FontSize = 12.5
+    };
+    private readonly Border _header = new();
+    private readonly Border _leftCard = new() { CornerRadius = new CornerRadius(14), Padding = new Thickness(16, 14, 16, 14) };
+    private readonly Border _rightCard = new() { CornerRadius = new CornerRadius(14), ClipToBounds = true };
+    private readonly Border _logToolbar = new();
+    private readonly Border _statusBar = new();
+    private readonly List<TextBlock> _mutedLabels = new();
 
     private readonly List<DiagnosticLogEntry> _allEntries = new();
     private CancellationTokenSource? _activeRun;
+    private bool _applyingTheme;
 
     public MainWindow()
     {
         Title = "InspireTel SIP Probe";
-        Width = 1260;
-        Height = 820;
-        MinWidth = 1050;
-        MinHeight = 720;
+        Width = 1280;
+        Height = 800;
+        MinWidth = 1080;
+        MinHeight = 700;
         WindowStartupLocation = WindowStartupLocation.CenterScreen;
-        Background = Rgb(241, 245, 249);
         FontFamily = new FontFamily("SF Pro Text, Helvetica Neue, system-ui");
-        FontSize = 13.5;
+        FontSize = 13;
 
         _password.PasswordChar = '•';
         _apiSecret.PasswordChar = '•';
         _logScroll.Content = _logLines;
         _stop.IsEnabled = false;
+
+        StyleAction(_loadCfg, "Load phone config", "Reads a Yealink .cfg and fills the fields. The password stays in memory and is never logged.", false);
+        StyleAction(_runMatrix, "Test path", "Tries UDP, TCP and TLS without the password. A 401 means the PBX is reachable. Safe first step — it will not lock the extension.", false);
+        StyleAction(_runRegister, "Prove login", "Sends one authenticated REGISTER with these credentials, then removes it. Use after Test path succeeds.", true);
+        StyleAction(_checkPbx, "Check PBX", "Asks the Yeastar API whether this extension is online, assigned a phone, or on the blocked-IP list. Needs Client ID and Secret under Advanced.", false);
+        StyleAction(_stop, "Stop", "Cancels the test that is currently running.", false);
+        StyleGhost(_clear, "Clear");
+        StyleGhost(_export, "Export");
 
         _transport.ItemsSource = Enum.GetNames<SipTransport>();
         _transport.SelectedItem = SipTransport.Tls.ToString();
@@ -103,11 +126,21 @@ public sealed class MainWindow : Window
         _stop.Click += (_, _) => _activeRun?.Cancel();
         _clear.Click += (_, _) => ClearLog();
         _export.Click += async (_, _) => await ExportLogAsync();
+        _darkMode.IsCheckedChanged += (_, _) =>
+        {
+            if (_applyingTheme || Application.Current is null)
+                return;
+            Application.Current.RequestedThemeVariant = _darkMode.IsChecked == true ? ThemeVariant.Dark : ThemeVariant.Light;
+            ApplyChrome();
+        };
 
         Content = BuildRoot();
+        ApplyChrome();
+        ActualThemeVariantChanged += (_, _) => ApplyChrome();
         AppendWelcome();
         Opened += async (_, _) =>
         {
+            SyncDarkToggle();
             if (string.IsNullOrWhiteSpace(Program.StartupCfgPath))
                 return;
             try
@@ -123,10 +156,7 @@ public sealed class MainWindow : Window
 
     private Control BuildRoot()
     {
-        var root = new Grid
-        {
-            RowDefinitions = RowDefinitions.Parse("96,*,42")
-        };
+        var root = new Grid { RowDefinitions = RowDefinitions.Parse("64,*,36") };
         var header = BuildHeader();
         var body = BuildBody();
         var status = BuildStatusBar();
@@ -141,153 +171,126 @@ public sealed class MainWindow : Window
 
     private Control BuildHeader()
     {
-        var header = new Grid
+        _header.Padding = new Thickness(22, 0, 18, 0);
+        var grid = new Grid { ColumnDefinitions = ColumnDefinitions.Parse("Auto,*,Auto") };
+        var mark = new Border
         {
-            Background = new LinearGradientBrush
-            {
-                StartPoint = new RelativePoint(0, 0, RelativeUnit.Relative),
-                EndPoint = new RelativePoint(1, 0, RelativeUnit.Relative),
-                GradientStops =
-                {
-                    new GradientStop(Color.FromRgb(8, 86, 91), 0),
-                    new GradientStop(Color.FromRgb(13, 116, 122), 1)
-                }
-            },
-            ColumnDefinitions = ColumnDefinitions.Parse("*,Auto")
+            Width = 8,
+            Height = 28,
+            CornerRadius = new CornerRadius(3),
+            Background = Accent(),
+            Margin = new Thickness(0, 0, 12, 0),
+            VerticalAlignment = VerticalAlignment.Center
         };
-        var titles = new StackPanel { Margin = new Thickness(30, 16, 20, 12), Spacing = 4 };
-        titles.Children.Add(new TextBlock
+        var titles = new StackPanel { Spacing = 1, VerticalAlignment = VerticalAlignment.Center };
+        titles.Children.Add(_title);
+        titles.Children.Add(_subtitle);
+        var brand = new StackPanel
         {
-            Text = "InspireTel SIP Probe",
-            Foreground = Brushes.White,
-            FontSize = 26,
-            FontWeight = FontWeight.SemiBold
-        });
-        titles.Children.Add(new TextBlock
-        {
-            Text = "Prove DNS, firewall, TLS and SIP registration independently of the handset",
-            Foreground = new SolidColorBrush(Color.FromRgb(204, 251, 241)),
-            FontSize = 14
-        });
-        var version = new TextBlock
-        {
-            Text = "v1.2  •  macOS  •  Passwords and digest values are never logged",
-            Foreground = new SolidColorBrush(Color.FromRgb(153, 246, 228)),
+            Orientation = Orientation.Horizontal,
+            Spacing = 0,
             VerticalAlignment = VerticalAlignment.Center,
-            Margin = new Thickness(0, 0, 28, 0)
+            Children = { mark, titles }
         };
-        Grid.SetColumn(version, 1);
-        header.Children.Add(titles);
-        header.Children.Add(version);
-        return header;
+        var tools = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 14,
+            VerticalAlignment = VerticalAlignment.Center,
+            Children =
+            {
+                _darkMode,
+                Muted("v1.3  ·  passwords never logged")
+            }
+        };
+        Grid.SetColumn(tools, 2);
+        grid.Children.Add(brand);
+        grid.Children.Add(tools);
+        _header.Child = grid;
+        return _header;
     }
 
     private Control BuildBody()
     {
         var body = new Grid
         {
-            ColumnDefinitions = ColumnDefinitions.Parse("420,6,*"),
-            Margin = new Thickness(16)
+            ColumnDefinitions = ColumnDefinitions.Parse("430,14,*"),
+            Margin = new Thickness(16, 10, 16, 8)
         };
-        var left = new Border
-        {
-            Background = Brushes.White,
-            Padding = new Thickness(18, 14, 18, 14),
-            CornerRadius = new CornerRadius(6),
-            Child = BuildConfigurationPanel()
-        };
-        var splitter = new GridSplitter
-        {
-            Width = 6,
-            Background = Rgb(203, 213, 225),
-            ResizeDirection = GridResizeDirection.Columns
-        };
-        var right = new Border
-        {
-            Background = Rgb(20, 25, 31),
-            CornerRadius = new CornerRadius(6),
-            ClipToBounds = true,
-            Child = BuildLogPanel()
-        };
-        Grid.SetColumn(left, 0);
-        Grid.SetColumn(splitter, 1);
-        Grid.SetColumn(right, 2);
-        body.Children.Add(left);
-        body.Children.Add(splitter);
-        body.Children.Add(right);
+        _leftCard.Child = BuildConfigurationPanel();
+        _rightCard.Child = BuildLogPanel();
+        Grid.SetColumn(_rightCard, 2);
+        body.Children.Add(_leftCard);
+        body.Children.Add(_rightCard);
         return body;
     }
 
     private Control BuildConfigurationPanel()
     {
-        var panel = new Grid { RowDefinitions = RowDefinitions.Parse("Auto,Auto,*,Auto") };
-        var title = new TextBlock
+        var panel = new Grid { RowDefinitions = RowDefinitions.Parse("Auto,*,Auto") };
+        var intro = new StackPanel { Spacing = 2, Margin = new Thickness(0, 0, 0, 10) };
+        intro.Children.Add(SectionTitle("Endpoint"));
+        intro.Children.Add(Muted("Same values as the handset. Load a Yealink cfg if you have one."));
+
+        var fields = new StackPanel { Spacing = 8 };
+        fields.Children.Add(Labeled("PBX hostname", _server, "DNS name of the Cloud PBX, not an IP, when using TLS."));
+        fields.Children.Add(TwoCol(
+            Labeled("Transport", _transport, "Must match the extension on the PBX. Yeastar Cloud remote phones usually use TLS."),
+            Labeled("Port", _port, "Destination port for Prove login. TLS is typically 5061; UDP/TCP 5060.")));
+        fields.Children.Add(TwoCol(
+            Labeled("SIP user", _sipUser, "Extension number, for example 101."),
+            Labeled("Auth name", _authName, "P-Series Registration Name. Often different from the extension number.")));
+        fields.Children.Add(Labeled("Password", BuildPasswordField(_password), "Registration password. Never written to the log or export."));
+
+        var advanced = new Expander
         {
-            Text = "Probe configuration",
-            FontSize = 18,
-            FontWeight = FontWeight.SemiBold,
-            Foreground = Rgb(15, 23, 42),
-            Margin = new Thickness(0, 0, 0, 4)
+            Header = "Advanced — extra ports, TLS, PBX API",
+            IsExpanded = false,
+            Margin = new Thickness(0, 6, 0, 0),
+            Content = BuildAdvanced()
         };
-        var subtitle = new TextBlock
-        {
-            Text = "Use the same SIP values as the endpoint. The matrix uses the UDP/TCP/TLS ports on the Matrix tab.",
-            Foreground = Rgb(71, 85, 105),
-            TextWrapping = TextWrapping.Wrap,
-            Margin = new Thickness(0, 0, 0, 10)
-        };
-        var tabs = new TabControl();
-        tabs.Items.Add(new TabItem { Header = "SIP", Content = new ScrollViewer { Content = BuildSipFields(), VerticalScrollBarVisibility = ScrollBarVisibility.Auto } });
-        tabs.Items.Add(new TabItem { Header = "Matrix", Content = BuildMatrixFields() });
-        tabs.Items.Add(new TabItem { Header = "PBX API", Content = BuildApiFields() });
+
+        var mid = new StackPanel { Spacing = 0 };
+        mid.Children.Add(fields);
+        mid.Children.Add(advanced);
+
         var actions = BuildActionPanel();
-        Grid.SetRow(subtitle, 1);
-        Grid.SetRow(tabs, 2);
-        Grid.SetRow(actions, 3);
-        panel.Children.Add(title);
-        panel.Children.Add(subtitle);
-        panel.Children.Add(tabs);
+        Grid.SetRow(mid, 1);
+        Grid.SetRow(actions, 2);
+        panel.Children.Add(intro);
+        panel.Children.Add(mid);
         panel.Children.Add(actions);
         return panel;
     }
 
-    private Control BuildSipFields()
+    private Control BuildAdvanced()
     {
-        return FormGrid(
-            ("PBX hostname", _server),
-            ("Transport", _transport),
-            ("Destination port", _port),
-            ("SIP user", _sipUser),
-            ("Auth name", _authName),
-            ("Password", BuildPasswordField(_password)),
-            ("Local port", _localPort),
-            ("Register expiry", _expiry),
-            ("Timeout", _timeout),
-            ("TLS options", TlsOptions()),
-            ("", Hint("Local port 0 = automatic. Destination port is for authenticated REGISTER. Matrix ports are on the Matrix tab.")));
-    }
-
-    private Control BuildMatrixFields()
-    {
-        return FormGrid(
-            ("UDP port", _udpPort),
-            ("TCP port", _tcpPort),
-            ("TLS port", _tlsPort),
-            ("", Hint("The no-auth matrix tests these three listeners. If Destination port on the SIP tab is different, that custom target is added as a fourth probe.")));
-    }
-
-    private Control BuildApiFields()
-    {
-        return FormGrid(
-            ("API URL", _apiUrl),
-            ("Client ID", _apiClientId),
-            ("Client secret", BuildPasswordField(_apiSecret)),
-            ("", Hint("Settings → Integrations → API. Leave URL blank to use https:// plus the SIP hostname.")));
+        var stack = new StackPanel { Spacing = 8, Margin = new Thickness(0, 8, 0, 4) };
+        stack.Children.Add(Muted("These stay hidden for the usual cfg workflow."));
+        stack.Children.Add(ThreeCol(
+            Labeled("Local port", _localPort, "0 = automatic. Change only if you are testing a specific source port."),
+            Labeled("Expiry", _expiry, "REGISTER Expires. Yeastar Cloud minimum is often 600."),
+            Labeled("Timeout", _timeout, "Seconds to wait for each network step.")));
+        stack.Children.Add(TlsOptions());
+        stack.Children.Add(SectionTitle("Path test ports"));
+        stack.Children.Add(Muted("Test path tries all three. A custom Prove login port is added if it is different."));
+        stack.Children.Add(ThreeCol(
+            Labeled("UDP", _udpPort, "UDP listener to try during Test path."),
+            Labeled("TCP", _tcpPort, "TCP listener to try during Test path."),
+            Labeled("TLS", _tlsPort, "TLS listener to try during Test path.")));
+        stack.Children.Add(SectionTitle("PBX API"));
+        stack.Children.Add(Muted("Settings → Integrations → API. Leave URL blank to use https:// plus the hostname."));
+        stack.Children.Add(Labeled("API URL", _apiUrl, "Yeastar web URL. Blank means https:// plus the PBX hostname."));
+        stack.Children.Add(TwoCol(
+            Labeled("Client ID", _apiClientId, "OpenAPI Client ID from the PBX."),
+            Labeled("Client secret", BuildPasswordField(_apiSecret), "OpenAPI Client Secret. Never logged.")));
+        return stack;
     }
 
     private Control TlsOptions()
     {
-        var stack = new StackPanel { Spacing = 6 };
+        _ignoreCertificateErrors.Foreground = new SolidColorBrush(Color.FromRgb(196, 92, 64));
+        var stack = new StackPanel { Spacing = 4 };
         stack.Children.Add(_forceTls12);
         stack.Children.Add(_ignoreCertificateErrors);
         return stack;
@@ -295,13 +298,17 @@ public sealed class MainWindow : Window
 
     private static Control BuildPasswordField(TextBox password)
     {
-        var show = SecondaryButton("Show");
-        show.Width = 64;
-        show.Height = 30;
+        var show = new Button
+        {
+            Content = "Show",
+            Width = 58,
+            Height = 30,
+            Padding = new Thickness(0)
+        };
         show.PointerPressed += (_, _) => password.PasswordChar = '\0';
         show.PointerReleased += (_, _) => password.PasswordChar = '•';
         show.PointerExited += (_, _) => password.PasswordChar = '•';
-        var row = new Grid { ColumnDefinitions = ColumnDefinitions.Parse("*,8,Auto") };
+        var row = new Grid { ColumnDefinitions = ColumnDefinitions.Parse("*,6,Auto") };
         Grid.SetColumn(show, 2);
         row.Children.Add(password);
         row.Children.Add(show);
@@ -310,30 +317,33 @@ public sealed class MainWindow : Window
 
     private Control BuildActionPanel()
     {
-        var actions = new StackPanel { Spacing = 8, Margin = new Thickness(0, 12, 0, 0) };
-        foreach (var button in new[] { _loadCfg, _runRegister, _runMatrix, _checkPbx, _stop })
+        var grid = new Grid
         {
+            ColumnDefinitions = ColumnDefinitions.Parse("*,10,*"),
+            RowDefinitions = RowDefinitions.Parse("Auto,8,Auto,8,Auto"),
+            Margin = new Thickness(0, 14, 0, 0)
+        };
+        Place(grid, _loadCfg, 0, 0);
+        Place(grid, _runMatrix, 0, 2);
+        Place(grid, _runRegister, 2, 0);
+        Place(grid, _checkPbx, 2, 2);
+        Grid.SetColumnSpan(_stop, 3);
+        Place(grid, _stop, 4, 0);
+        foreach (var button in new[] { _loadCfg, _runMatrix, _runRegister, _checkPbx, _stop })
             button.HorizontalAlignment = HorizontalAlignment.Stretch;
-            actions.Children.Add(button);
-        }
-        return actions;
+        return grid;
     }
 
     private Control BuildLogPanel()
     {
-        var panel = new Grid { RowDefinitions = RowDefinitions.Parse("52,*") };
-        var toolbar = new Grid
-        {
-            Background = Rgb(30, 41, 50),
-            ColumnDefinitions = ColumnDefinitions.Parse("*,Auto,Auto"),
-            Margin = new Thickness(12, 8)
-        };
+        var panel = new Grid { RowDefinitions = RowDefinitions.Parse("48,*") };
+        var toolbar = new Grid { ColumnDefinitions = ColumnDefinitions.Parse("*,Auto,Auto"), Margin = new Thickness(14, 0) };
         var title = new TextBlock
         {
-            Text = "Diagnostic log",
-            Foreground = Rgb(226, 232, 240),
+            Text = "Live trace",
+            Foreground = new SolidColorBrush(Color.FromRgb(210, 230, 226)),
             FontWeight = FontWeight.SemiBold,
-            FontSize = 15,
+            FontSize = 13,
             VerticalAlignment = VerticalAlignment.Center
         };
         _clear.Margin = new Thickness(0, 0, 8, 0);
@@ -342,34 +352,35 @@ public sealed class MainWindow : Window
         toolbar.Children.Add(title);
         toolbar.Children.Add(_clear);
         toolbar.Children.Add(_export);
+        _logToolbar.Child = toolbar;
+        _logToolbar.Background = new SolidColorBrush(Color.FromRgb(16, 28, 30));
+        _logScroll.Background = new SolidColorBrush(Color.FromRgb(10, 18, 20));
+        _logScroll.Padding = new Thickness(12, 8);
         Grid.SetRow(_logScroll, 1);
-        panel.Children.Add(toolbar);
+        panel.Children.Add(_logToolbar);
         panel.Children.Add(_logScroll);
         return panel;
     }
 
     private Control BuildStatusBar()
     {
-        var bar = new Grid
-        {
-            Background = Brushes.White,
-            ColumnDefinitions = ColumnDefinitions.Parse("*,Auto"),
-            Margin = new Thickness(18, 0)
-        };
+        _statusBar.Padding = new Thickness(22, 0, 16, 0);
+        var bar = new Grid { ColumnDefinitions = ColumnDefinitions.Parse("*,Auto") };
         var help = new Button
         {
-            Content = "Interpretation guide",
+            Content = "How to read results",
             Background = Brushes.Transparent,
             BorderThickness = new Thickness(0),
-            Foreground = Rgb(13, 116, 122),
+            Foreground = Accent(),
             Padding = new Thickness(8, 4),
             VerticalAlignment = VerticalAlignment.Center
         };
-        help.Click += async (_, _) => await ShowAlert("SIP Probe interpretation guide", InterpretationText);
+        help.Click += async (_, _) => await ShowAlert("How to read results", InterpretationText);
         Grid.SetColumn(help, 1);
         bar.Children.Add(_status);
         bar.Children.Add(help);
-        return bar;
+        _statusBar.Child = bar;
+        return _statusBar;
     }
 
     private async Task RunAuthenticatedAsync()
@@ -385,7 +396,7 @@ public sealed class MainWindow : Window
             return;
         }
 
-        AppendSeparator($"AUTHENTICATED {profile.Transport.ToString().ToUpperInvariant()} REGISTER");
+        AppendSeparator($"PROVE LOGIN  {profile.Transport.ToString().ToUpperInvariant()}");
         await RunOneAsync(profile);
     }
 
@@ -402,14 +413,14 @@ public sealed class MainWindow : Window
             return;
         }
 
-        SetRunning(true, "Running no-auth transport matrix...");
+        SetRunning(true, "Testing UDP, TCP and TLS without a password...");
         _activeRun = new CancellationTokenSource();
         try
         {
             foreach (var item in baseProfile.MatrixTargets())
             {
                 _activeRun.Token.ThrowIfCancellationRequested();
-                AppendSeparator($"MATRIX: {item.Transport.ToString().ToUpperInvariant()} / {item.Port} (NO AUTH)");
+                AppendSeparator($"TEST PATH  {item.Transport.ToString().ToUpperInvariant()} / {item.Port}");
                 var profile = baseProfile with
                 {
                     Transport = item.Transport,
@@ -419,7 +430,7 @@ public sealed class MainWindow : Window
                 };
                 await ExecuteEngineAsync(profile, _activeRun.Token);
             }
-            _status.Text = "Transport matrix complete";
+            _status.Text = "Path test complete";
         }
         catch (OperationCanceledException)
         {
@@ -436,13 +447,13 @@ public sealed class MainWindow : Window
 
     private async Task RunOneAsync(DiagnosticProfile profile)
     {
-        SetRunning(true, "Running SIP probe...");
+        SetRunning(true, "Proving login...");
         _activeRun = new CancellationTokenSource();
         try
         {
             var result = await ExecuteEngineAsync(profile, _activeRun.Token);
             _status.Text = result.Registered
-                ? "REGISTER succeeded"
+                ? "Login succeeded"
                 : result.SipResponseReceived
                     ? $"PBX replied {result.FinalStatusCode}"
                     : result.Summary;
@@ -477,8 +488,8 @@ public sealed class MainWindow : Window
 
         if (string.IsNullOrWhiteSpace(_apiClientId.Text) || string.IsNullOrWhiteSpace(_apiSecret.Text))
         {
-            await ShowAlert("Check the probe configuration",
-                "Enter the Yeastar OpenAPI Client ID and Client Secret on the PBX API tab.");
+            await ShowAlert("Check PBX",
+                "Open Advanced and enter the Yeastar OpenAPI Client ID and Client Secret. They are under Settings → Integrations → API on the PBX.");
             return;
         }
 
@@ -486,8 +497,8 @@ public sealed class MainWindow : Window
             ? "https://" + (_server.Text ?? string.Empty).Trim()
             : _apiUrl.Text.Trim();
 
-        AppendSeparator("YEASTAR PBX API STATUS");
-        SetRunning(true, "Checking PBX API...");
+        AppendSeparator("CHECK PBX");
+        SetRunning(true, "Checking PBX...");
         _activeRun = new CancellationTokenSource();
         try
         {
@@ -502,7 +513,7 @@ public sealed class MainWindow : Window
                 AuthenticationName = _authName.Text ?? string.Empty,
                 TimeoutSeconds = (int)(_timeout.Value ?? 7)
             }, _activeRun.Token);
-            _status.Text = "PBX API check complete";
+            _status.Text = "PBX check complete";
         }
         catch (OperationCanceledException)
         {
@@ -512,7 +523,7 @@ public sealed class MainWindow : Window
         catch (Exception ex)
         {
             AppendLocal(DiagnosticLevel.Error, ex.Message);
-            _status.Text = "PBX API check failed";
+            _status.Text = "PBX check failed";
         }
         finally
         {
@@ -566,14 +577,13 @@ public sealed class MainWindow : Window
 
     private void AppendWelcome()
     {
-        AppendLocal(DiagnosticLevel.Info, "Ready. Start with the no-auth matrix to compare UDP, TCP and TLS on the configured ports.");
-        AppendLocal(DiagnosticLevel.Detail, "A 401/407 challenge is a positive reachability result; Via rewrite is reported as SIP ALG. Use Check PBX status when OpenAPI credentials are available.");
+        AppendLocal(DiagnosticLevel.Info, "Load a phone config, then Test path. A 401 means the PBX is reachable. Then Prove login.");
+        AppendLocal(DiagnosticLevel.Detail, "Hover the ⓘ on a button for what it does. Passwords are never logged.");
     }
 
     private void AppendSeparator(string title)
     {
-        var line = Environment.NewLine + new string('═', Math.Min(82, title.Length + 8)) + Environment.NewLine +
-                   $"   {title}" + Environment.NewLine + new string('═', Math.Min(82, title.Length + 8));
+        var line = Environment.NewLine + "──  " + title + "  ──";
         AppendLogVisual(line, Color.FromRgb(94, 234, 212));
         _logScroll.ScrollToEnd();
     }
@@ -602,8 +612,8 @@ public sealed class MainWindow : Window
         {
             Text = text,
             Foreground = new SolidColorBrush(color),
-            FontFamily = new FontFamily("Menlo, SF Mono, ui-monospace, monospace"),
-            FontSize = 12.25,
+            FontFamily = new FontFamily("IBM Plex Mono, Menlo, SF Mono, ui-monospace, monospace"),
+            FontSize = 12,
             TextWrapping = TextWrapping.NoWrap
         });
     }
@@ -636,7 +646,7 @@ public sealed class MainWindow : Window
         var path = file.TryGetLocalPath() ?? file.Path.LocalPath;
         var header = new[]
         {
-            "InspireTel SIP Probe v1.2 (macOS)",
+            "InspireTel SIP Probe v1.3 (macOS)",
             $"Exported: {DateTimeOffset.Now:u}",
             $"Server: {(_server.Text ?? string.Empty).Trim()}:{_port.Value}",
             $"Transport: {_transport.SelectedItem}",
@@ -760,35 +770,187 @@ public sealed class MainWindow : Window
         await dialog.ShowDialog(this);
     }
 
-    private static Control FormGrid(params (string Label, Control Control)[] rows)
+    private void ApplyChrome()
     {
-        var grid = new Grid { ColumnDefinitions = ColumnDefinitions.Parse("125,*") };
-        for (var i = 0; i < rows.Length; i++)
+        var dark = IsDark;
+        _applyingTheme = true;
+        try
         {
-            grid.RowDefinitions.Add(new RowDefinition(GridLength.Auto));
-            var caption = new TextBlock
-            {
-                Text = rows[i].Label,
-                VerticalAlignment = VerticalAlignment.Center,
-                Foreground = Rgb(51, 65, 85),
-                Margin = new Thickness(0, 8, 8, 0)
-            };
-            rows[i].Control.Margin = new Thickness(0, 4);
-            Grid.SetRow(caption, i);
-            Grid.SetRow(rows[i].Control, i);
-            Grid.SetColumn(rows[i].Control, 1);
-            if (!string.IsNullOrEmpty(rows[i].Label))
-                grid.Children.Add(caption);
-            grid.Children.Add(rows[i].Control);
+            SyncDarkToggle();
+            Background = dark ? Rgb(14, 18, 19) : Rgb(232, 238, 236);
+            _header.Background = dark ? Rgb(14, 18, 19) : Rgb(232, 238, 236);
+            _leftCard.Background = dark ? Rgb(24, 31, 32) : Brushes.White;
+            _leftCard.BorderBrush = dark ? Rgb(42, 54, 55) : Rgb(214, 224, 221);
+            _leftCard.BorderThickness = new Thickness(1);
+            _rightCard.BorderBrush = dark ? Rgb(20, 40, 42) : Rgb(16, 28, 30);
+            _rightCard.BorderThickness = new Thickness(1);
+            _statusBar.Background = dark ? Rgb(14, 18, 19) : Rgb(232, 238, 236);
+            _title.Foreground = dark ? Rgb(236, 245, 243) : Rgb(12, 32, 34);
+            _subtitle.Foreground = dark ? Rgb(156, 178, 176) : Rgb(90, 110, 108);
+            _status.Foreground = dark ? Rgb(156, 178, 176) : Rgb(90, 110, 108);
+            foreach (var label in _mutedLabels)
+                label.Foreground = dark ? Rgb(140, 160, 158) : Rgb(100, 118, 116);
+            StyleAction(_runRegister, "Prove login",
+                "Sends one authenticated REGISTER with these credentials, then removes it. Use after Test path succeeds.", true, dark);
+            StyleAction(_runMatrix, "Test path",
+                "Tries UDP, TCP and TLS without the password. A 401 means the PBX is reachable. Safe first step — it will not lock the extension.", false, dark);
+            StyleAction(_loadCfg, "Load phone config",
+                "Reads a Yealink .cfg and fills the fields. The password stays in memory and is never logged.", false, dark);
+            StyleAction(_checkPbx, "Check PBX",
+                "Asks the Yeastar API whether this extension is online, assigned a phone, or on the blocked-IP list. Needs Client ID and Secret under Advanced.", false, dark);
+            StyleAction(_stop, "Stop", "Cancels the test that is currently running.", false, dark);
+            StyleGhost(_clear, "Clear", dark);
+            StyleGhost(_export, "Export", dark);
         }
+        finally
+        {
+            _applyingTheme = false;
+        }
+    }
+
+    private void SyncDarkToggle()
+    {
+        _darkMode.IsChecked = IsDark;
+    }
+
+    private bool IsDark =>
+        ActualThemeVariant == ThemeVariant.Dark ||
+        Application.Current?.ActualThemeVariant == ThemeVariant.Dark;
+
+    private Control Labeled(string title, Control field, string tip)
+    {
+        var caption = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+        var text = new TextBlock { Text = title, FontSize = 11.5, FontWeight = FontWeight.Medium };
+        _mutedLabels.Add(text);
+        caption.Children.Add(text);
+        caption.Children.Add(InfoIcon(tip));
+        var stack = new StackPanel { Spacing = 3 };
+        stack.Children.Add(caption);
+        stack.Children.Add(field);
+        ToolTip.SetTip(field, tip);
+        return stack;
+    }
+
+    private static Control InfoIcon(string tip)
+    {
+        var icon = new TextBlock
+        {
+            Text = "ⓘ",
+            FontSize = 11,
+            Opacity = 0.55,
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        ToolTip.SetTip(icon, tip);
+        ToolTip.SetShowDelay(icon, 150);
+        return icon;
+    }
+
+    private TextBlock Muted(string text)
+    {
+        var block = new TextBlock { Text = text, FontSize = 11.5, TextWrapping = TextWrapping.Wrap };
+        _mutedLabels.Add(block);
+        return block;
+    }
+
+    private TextBlock SectionTitle(string text) => new()
+    {
+        Text = text,
+        FontSize = 13,
+        FontWeight = FontWeight.SemiBold,
+        Foreground = Accent(),
+        Margin = new Thickness(0, 4, 0, 0)
+    };
+
+    private static Control TwoCol(Control left, Control right)
+    {
+        var grid = new Grid { ColumnDefinitions = ColumnDefinitions.Parse("*,10,*") };
+        Grid.SetColumn(right, 2);
+        grid.Children.Add(left);
+        grid.Children.Add(right);
         return grid;
+    }
+
+    private static Control ThreeCol(Control a, Control b, Control c)
+    {
+        var grid = new Grid { ColumnDefinitions = ColumnDefinitions.Parse("*,8,*,8,*") };
+        Grid.SetColumn(b, 2);
+        Grid.SetColumn(c, 4);
+        grid.Children.Add(a);
+        grid.Children.Add(b);
+        grid.Children.Add(c);
+        return grid;
+    }
+
+    private static void Place(Grid grid, Control child, int row, int column)
+    {
+        Grid.SetRow(child, row);
+        Grid.SetColumn(child, column);
+        grid.Children.Add(child);
+    }
+
+    private static void StyleAction(Button button, string title, string tip, bool primary, bool dark = false)
+    {
+        var label = new TextBlock
+        {
+            Text = title,
+            FontWeight = FontWeight.SemiBold,
+            FontSize = 13,
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        var info = new TextBlock
+        {
+            Text = "ⓘ",
+            FontSize = 12,
+            Opacity = 0.7,
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        button.Content = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 7,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            Children = { label, info }
+        };
+        button.Height = primary ? 44 : 38;
+        button.CornerRadius = new CornerRadius(10);
+        button.BorderThickness = primary ? new Thickness(0) : new Thickness(1);
+        button.Padding = new Thickness(8, 0);
+        if (primary)
+        {
+            button.Background = Accent();
+            button.Foreground = Brushes.White;
+            label.Foreground = Brushes.White;
+            info.Foreground = Brushes.White;
+        }
+        else
+        {
+            button.Background = dark ? Rgb(36, 46, 47) : Rgb(241, 246, 245);
+            button.BorderBrush = dark ? Rgb(58, 74, 74) : Rgb(198, 214, 211);
+            var ink = dark ? Rgb(230, 240, 238) : Rgb(24, 42, 44);
+            button.Foreground = ink;
+            label.Foreground = ink;
+            info.Foreground = ink;
+        }
+        ToolTip.SetTip(button, tip);
+        ToolTip.SetShowDelay(button, 150);
+    }
+
+    private static void StyleGhost(Button button, string title, bool dark = false)
+    {
+        button.Content = title;
+        button.Height = 30;
+        button.Padding = new Thickness(10, 0);
+        button.CornerRadius = new CornerRadius(8);
+        button.BorderThickness = new Thickness(0);
+        button.Background = dark ? Rgb(28, 40, 42) : Rgb(36, 56, 58);
+        button.Foreground = new SolidColorBrush(Color.FromRgb(210, 230, 226));
     }
 
     private static TextBox Field(string watermark) => new()
     {
         Watermark = watermark,
         HorizontalAlignment = HorizontalAlignment.Stretch,
-        MinHeight = 32
+        MinHeight = 34
     };
 
     private static NumericUpDown NumberField(decimal min, decimal max, decimal value) => new()
@@ -799,48 +961,22 @@ public sealed class MainWindow : Window
         Increment = 1,
         FormatString = "0",
         HorizontalAlignment = HorizontalAlignment.Stretch,
-        MinHeight = 32
+        MinHeight = 34
     };
 
-    private static TextBlock Hint(string text) => new()
-    {
-        Text = text,
-        Foreground = Rgb(100, 116, 139),
-        TextWrapping = TextWrapping.Wrap,
-        Margin = new Thickness(0, 8, 0, 0)
-    };
-
-    private static Button PrimaryButton(string text) => new()
-    {
-        Content = text,
-        Height = 38,
-        Background = Rgb(13, 116, 122),
-        Foreground = Brushes.White,
-        FontWeight = FontWeight.SemiBold,
-        CornerRadius = new CornerRadius(4),
-        BorderThickness = new Thickness(0)
-    };
-
-    private static Button SecondaryButton(string text) => new()
-    {
-        Content = text,
-        Height = 34,
-        Background = Rgb(241, 245, 249),
-        Foreground = Rgb(30, 41, 59),
-        CornerRadius = new CornerRadius(4)
-    };
+    private static SolidColorBrush Accent() => new(Color.FromRgb(14, 122, 122));
 
     private static SolidColorBrush Rgb(byte r, byte g, byte b) => new(Color.FromRgb(r, g, b));
 
     private const string InterpretationText =
-        "RESULT INTERPRETATION\n\n" +
-        "DNS fails — wrong hostname or DNS policy.\n\n" +
-        "TCP/TLS connection fails — firewall, router, ISP policy, wrong port, or service not listening.\n\n" +
-        "TLS handshake fails — certificate trust/hostname/time/TLS-version issue, or TLS inspection.\n\n" +
-        "401/407 challenge — positive result: the PBX is reachable and return traffic works.\n\n" +
-        "200 OK — network, PBX and credentials work from this computer; focus on the handset.\n\n" +
-        "Repeated 401 or 403 — credentials, extension transport policy, registration security or blocked IP.\n\n" +
-        "Via sent-by rewritten — SIP ALG on the customer router. received=/rport= alone is normal NAT.\n\n" +
-        "Clock behind/ahead of certificate dates — fix handset NTP (avoid private 172.19.x.x) before blaming TLS.\n\n" +
-        "No SIP response after connection — SIP-aware firewall/ALG, proxy interference, or PBX service problem.";
+        "TEST PATH — tries UDP, TCP and TLS without a password.\n" +
+        "A 401/407 is success: the PBX is reachable and return traffic works.\n\n" +
+        "PROVE LOGIN — one authenticated REGISTER, then it unregisters.\n" +
+        "200 OK means credentials work from this computer; look at the handset next.\n\n" +
+        "CHECK PBX — Yeastar API: extension online, assigned phone, blocked IPs.\n\n" +
+        "DNS fails — wrong hostname or DNS policy.\n" +
+        "TCP/TLS connect fails — firewall, ISP, wrong port, or service down.\n" +
+        "TLS handshake fails — certificate, clock, or TLS inspection.\n" +
+        "Via sent-by rewritten — SIP ALG. received=/rport= alone is normal NAT.\n" +
+        "Clock vs certificate — fix NTP (no private 172.19.x.x) before blaming TLS.";
 }
