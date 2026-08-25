@@ -24,7 +24,7 @@ public sealed record DiagnosticProfile
     public bool ForceTls12 { get; init; } = true;
     public bool IgnoreTlsCertificateErrors { get; init; }
     public bool Authenticate { get; init; } = true;
-    public string UserAgent { get; init; } = "InspireTel-SIP-Probe/1.1";
+    public string UserAgent { get; init; } = "InspireTel-SIP-Probe/1.2";
     public IReadOnlyList<string> NtpServers { get; init; } = Array.Empty<string>();
 
     public string EffectiveAuthenticationName =>

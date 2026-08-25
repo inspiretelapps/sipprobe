@@ -1,9 +1,9 @@
 # InspireTel SIP Probe
 
-A portable Windows diagnostic utility that tests SIP registration independently of an IP handset.
+A portable diagnostic utility that tests SIP registration independently of an IP handset. Builds exist for **Windows** and **macOS**.
 
 Private source: [inspiretelapps/sipprobe](https://github.com/inspiretelapps/sipprobe).
-The Windows executable is attached to [GitHub Releases](https://github.com/inspiretelapps/sipprobe/releases) rather than committed here.
+Packaged apps are attached to [GitHub Releases](https://github.com/inspiretelapps/sipprobe/releases) rather than committed here.
 
 ## What it proves
 
@@ -22,8 +22,10 @@ The program does not capture audio, install a driver, require administrator righ
 
 ## Fastest workflow for the current extension
 
-1. Copy `InspireTel.SIPProbe.exe` to the affected Windows laptop.
-2. Run it. It is self-contained and needs no .NET installation.
+1. Copy the app to the affected laptop:
+   - Windows: `InspireTel.SIPProbe.exe`
+   - macOS: `InspireTel SIP Probe.app` (Apple Silicon zip)
+2. Run it. It is self-contained and needs no .NET installation. On macOS, if Gatekeeper blocks it, right-click the app and choose **Open**, or run `xattr -dr com.apple.quarantine "InspireTel SIP Probe.app"`.
 3. Click **Load Yealink .cfg** and choose the generated configuration uploaded to the T40G.
 4. Confirm that the populated values show:
    - the intended PBX hostname;
@@ -71,6 +73,12 @@ Requirements: .NET 10 SDK on Windows, macOS, or Linux.
 ./build-windows.ps1
 ```
 
+```bash
+./build-macos.sh
+```
+
+`build-macos.sh` produces `dist/InspireTel-SIPProbe-macOS-arm64.zip`. Set `SIPPROBE_MAC_INTEL=1` to also build the Intel (`osx-x64`) zip.
+
 Automated tests:
 
 ```powershell
@@ -81,6 +89,6 @@ The self-tests cover SIP response parsing, RFC Digest calculation, configurable 
 
 ## Operational notes
 
-- The executable is an unsigned internal diagnostic build. Windows application-control policy may prevent unsigned software from running; follow the client's normal IT policy.
+- The builds are unsigned internal diagnostic binaries. Windows application-control policy and macOS Gatekeeper may prevent them from running; follow the client's normal IT policy.
 - Do not test repeatedly after `403`, `429`, or repeated `401` responses. Check PBX **Blocked IPs** first.
 - A successful authenticated probe briefly creates a registration and then automatically removes it. If cleanup cannot complete, the binding expires according to the configured registration timer.

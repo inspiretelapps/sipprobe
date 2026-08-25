@@ -152,7 +152,7 @@ public sealed class MainForm : Form
         };
         var version = new Label
         {
-            Text = "v1.1  •  Passwords and digest values are never logged",
+            Text = "v1.2  •  Passwords and digest values are never logged",
             ForeColor = Color.FromArgb(153, 246, 228),
             TextAlign = ContentAlignment.MiddleRight,
             Dock = DockStyle.Right,
@@ -718,7 +718,7 @@ public sealed class MainForm : Form
 
         var header = new[]
         {
-            "InspireTel SIP Probe v1.1",
+            "InspireTel SIP Probe v1.2",
             $"Exported: {DateTimeOffset.Now:u}",
             $"Server: {_server.Text.Trim()}:{_port.Value}",
             $"Transport: {_transport.SelectedItem}",
