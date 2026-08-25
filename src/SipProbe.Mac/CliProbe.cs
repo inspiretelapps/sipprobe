@@ -80,7 +80,7 @@ internal static class CliProbe
 
         if (runRegister)
         {
-            WriteSeparator($"AUTHENTICATED {baseProfile.Transport.ToString().ToUpperInvariant()} REGISTER");
+            WriteSeparator($"TEST SIP REGISTRATION  {baseProfile.Transport.ToString().ToUpperInvariant()}");
             var result = await RunEngineAsync(baseProfile with { Authenticate = true }, timeout.Token);
             failed |= !result.Registered;
             Write(result.Registered ? DiagnosticLevel.Success : DiagnosticLevel.Warning, result.Summary);

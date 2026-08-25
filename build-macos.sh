@@ -5,7 +5,7 @@ root="$(cd "$(dirname "$0")" && pwd)"
 project="$root/src/SipProbe.Mac/SipProbe.Mac.csproj"
 app_name="InspireTel SIP Probe"
 executable="InspireTel.SIPProbe"
-version="1.2.0"
+version="1.3.0"
 
 dotnet run --project "$root/tests/SipProbe.SelfTest/SipProbe.SelfTest.csproj" -c Release
 
@@ -37,7 +37,7 @@ make_app() {
   if command -v codesign >/dev/null 2>&1; then
     codesign --force --deep --sign - "$app_dir"
   fi
-  echo "Built: $app_dir"
+  echo "Built: $app_dir (v$version)"
 }
 
 zip_app() {

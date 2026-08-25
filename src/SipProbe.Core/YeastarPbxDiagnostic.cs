@@ -393,7 +393,7 @@ public sealed class YeastarPbxDiagnostic
         try
         {
             using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
-            http.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("InspireTel-SIP-Probe", "1.1"));
+            http.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("InspireTel-SIP-Probe", "1.3"));
             var ip = (await http.GetStringAsync("https://api.ipify.org/", cancellationToken)).Trim();
             return ip.Length == 0 ? null : ip;
         }

@@ -26,7 +26,7 @@ public sealed record DiagnosticProfile
     public bool Authenticate { get; init; } = true;
     public bool KeepRegistered { get; init; }
     public bool UnregisterOnly { get; init; }
-    public string UserAgent { get; init; } = "InspireTel-SIP-Probe/1.2";
+    public string UserAgent { get; init; } = "InspireTel-SIP-Probe/1.3";
     public IReadOnlyList<string> NtpServers { get; init; } = Array.Empty<string>();
 
     public string EffectiveAuthenticationName =>

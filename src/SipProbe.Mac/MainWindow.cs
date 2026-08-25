@@ -288,7 +288,7 @@ public sealed class MainWindow : Window
         fields.Children.Add(Labeled("PBX hostname", _server, "DNS name of the Cloud PBX, not an IP, when using TLS."));
         fields.Children.Add(TwoCol(
             Labeled("Transport", _transport, "Must match the extension on the PBX. Yeastar Cloud remote phones usually use TLS."),
-            Labeled("Port", _port, "Destination port for Prove login. TLS is typically 5061; UDP/TCP 5060.")));
+            Labeled("Port", _port, "Destination port for Test SIP Registration. TLS is typically 5061; UDP/TCP 5060.")));
         fields.Children.Add(TwoCol(
             Labeled("SIP user", _sipUser, "Extension number, for example 101."),
             Labeled("Auth name", _authName, "P-Series Registration Name. Often different from the extension number.")));
@@ -373,7 +373,7 @@ public sealed class MainWindow : Window
             Labeled("Timeout", _timeout, "Seconds to wait for each network step.")));
         stack.Children.Add(TlsOptions());
         stack.Children.Add(SectionTitle("Path test ports"));
-        stack.Children.Add(Muted("Test path tries all three. A custom Prove login port is added if it is different."));
+        stack.Children.Add(Muted("Test Path tries all three. A custom Test SIP Registration port is added if it is different."));
         stack.Children.Add(ThreeCol(
             Labeled("UDP", _udpPort, "UDP listener to try during Test path."),
             Labeled("TCP", _tcpPort, "TCP listener to try during Test path."),
@@ -644,7 +644,7 @@ public sealed class MainWindow : Window
 
         if (string.IsNullOrWhiteSpace(_apiClientId.Text) || string.IsNullOrWhiteSpace(_apiSecret.Text))
         {
-            await ShowAlert("Check PBX",
+            await ShowAlert("Check PBX Status",
                 "Open Advanced and enter the Yeastar OpenAPI Client ID and Client Secret. They are under Settings → Integrations → API on the PBX.");
             return;
         }
