@@ -23,6 +23,13 @@ public sealed class MainForm : Form
         AutoSize = true,
         ForeColor = Color.FromArgb(170, 60, 45)
     };
+    private readonly NumericUpDown _udpPort = NumberField(1, 65535, 5060);
+    private readonly NumericUpDown _tcpPort = NumberField(1, 65535, 5060);
+    private readonly NumericUpDown _tlsPort = NumberField(1, 65535, 5061);
+    private readonly TextBox _apiUrl = new() { PlaceholderText = "https://tenant.pbx.yeastarycm.co.za" };
+    private readonly TextBox _apiClientId = new() { PlaceholderText = "OpenAPI Client ID" };
+    private readonly TextBox _apiSecret = new() { UseSystemPasswordChar = true, PlaceholderText = "Not saved or logged" };
+    private IReadOnlyList<string> _ntpServers = Array.Empty<string>();
 
     private readonly RichTextBox _log = new()
     {
@@ -37,6 +44,7 @@ public sealed class MainForm : Form
 
     private readonly Button _runRegister = PrimaryButton("Run authenticated REGISTER");
     private readonly Button _runMatrix = SecondaryButton("Run transport matrix (no auth)");
+    private readonly Button _checkPbx = SecondaryButton("Check PBX status");
     private readonly Button _loadCfg = SecondaryButton("Load Yealink .cfg");
     private readonly Button _stop = SecondaryButton("Stop");
     private readonly Button _clear = SecondaryButton("Clear log");
@@ -67,7 +75,7 @@ public sealed class MainForm : Form
         _transport.SelectedItem = SipTransport.Tls.ToString();
         _transport.SelectedIndexChanged += (_, _) =>
         {
-            _port.Value = SelectedTransport() == SipTransport.Tls ? 5061 : 5060;
+            _port.Value = MatrixPortFor(SelectedTransport());
             _forceTls12.Enabled = SelectedTransport() == SipTransport.Tls;
             _ignoreCertificateErrors.Enabled = SelectedTransport() == SipTransport.Tls;
         };
@@ -87,6 +95,7 @@ public sealed class MainForm : Form
 
         _runRegister.Click += async (_, _) => await RunAuthenticatedAsync();
         _runMatrix.Click += async (_, _) => await RunMatrixAsync();
+        _checkPbx.Click += async (_, _) => await RunPbxCheckAsync();
         _loadCfg.Click += (_, _) => LoadYealinkConfig();
         _stop.Click += (_, _) => _activeRun?.Cancel();
         _clear.Click += (_, _) => ClearLog();
@@ -143,7 +152,7 @@ public sealed class MainForm : Form
         };
         var version = new Label
         {
-            Text = "v1.0  •  Passwords and digest values are never logged",
+            Text = "v1.1  •  Passwords and digest values are never logged",
             ForeColor = Color.FromArgb(153, 246, 228),
             TextAlign = ContentAlignment.MiddleRight,
             Dock = DockStyle.Right,
@@ -199,15 +208,36 @@ public sealed class MainForm : Form
         }, 0, 0);
         panel.Controls.Add(new Label
         {
-            Text = "Use the same SIP values as the endpoint. The reachability matrix deliberately skips authentication.",
+            Text = "Use the same SIP values as the endpoint. The matrix uses the UDP/TCP/TLS ports on the Matrix tab.",
             ForeColor = Color.FromArgb(71, 85, 105),
             AutoSize = true,
             MaximumSize = new Size(340, 0),
             Margin = new Padding(0, 0, 0, 14)
         }, 0, 1);
-        panel.Controls.Add(BuildFields(), 0, 2);
+        panel.Controls.Add(BuildTabs(), 0, 2);
         panel.Controls.Add(BuildActionPanel(), 0, 3);
         return panel;
+    }
+
+    private Control BuildTabs()
+    {
+        var tabs = new TabControl
+        {
+            Dock = DockStyle.Fill,
+            Padding = new Point(8, 8)
+        };
+        tabs.TabPages.Add(WrapTab("SIP", BuildFields()));
+        tabs.TabPages.Add(WrapTab("Matrix", BuildMatrixFields()));
+        tabs.TabPages.Add(WrapTab("PBX API", BuildApiFields()));
+        return tabs;
+    }
+
+    private static TabPage WrapTab(string title, Control content)
+    {
+        var page = new TabPage(title) { Padding = new Padding(8, 10, 8, 8), UseVisualStyleBackColor = true };
+        content.Dock = DockStyle.Fill;
+        page.Controls.Add(content);
+        return page;
     }
 
     private Control BuildFields()
@@ -246,13 +276,67 @@ public sealed class MainForm : Form
 
         var hints = new Label
         {
-            Text = "Local port 0 = automatic. For Yeastar P-Series Cloud, start with TLS / 5061 / expiry 600.",
+            Text = "Local port 0 = automatic. Destination port is for authenticated REGISTER. Matrix ports are on the Matrix tab.",
             ForeColor = Color.FromArgb(100, 116, 139),
             AutoSize = true,
             MaximumSize = new Size(205, 0),
             Margin = new Padding(0, 7, 0, 0)
         };
         fields.Controls.Add(hints, 1, 10);
+        return fields;
+    }
+
+    private Control BuildMatrixFields()
+    {
+        var fields = new TableLayoutPanel
+        {
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            ColumnCount = 2,
+            RowCount = 4,
+            Margin = new Padding(0)
+        };
+        fields.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 125));
+        fields.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        AddField(fields, 0, "UDP port", _udpPort);
+        AddField(fields, 1, "TCP port", _tcpPort);
+        AddField(fields, 2, "TLS port", _tlsPort);
+        var hints = new Label
+        {
+            Text = "The no-auth matrix tests these three listeners. If Destination port on the SIP tab is different, that custom target is added as a fourth probe.",
+            ForeColor = Color.FromArgb(100, 116, 139),
+            AutoSize = true,
+            MaximumSize = new Size(205, 0),
+            Margin = new Padding(0, 7, 0, 0)
+        };
+        fields.Controls.Add(hints, 1, 3);
+        return fields;
+    }
+
+    private Control BuildApiFields()
+    {
+        var fields = new TableLayoutPanel
+        {
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            ColumnCount = 2,
+            RowCount = 4,
+            Margin = new Padding(0)
+        };
+        fields.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 125));
+        fields.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        AddField(fields, 0, "API URL", _apiUrl);
+        AddField(fields, 1, "Client ID", _apiClientId);
+        AddField(fields, 2, "Client secret", _apiSecret);
+        var hints = new Label
+        {
+            Text = "Settings → Integrations → API. Checks extension online status, assigned phone, transport, and blocked IPs when the OpenAPI exposes them. Leave URL blank to use https:// plus the SIP hostname.",
+            ForeColor = Color.FromArgb(100, 116, 139),
+            AutoSize = true,
+            MaximumSize = new Size(205, 0),
+            Margin = new Padding(0, 7, 0, 0)
+        };
+        fields.Controls.Add(hints, 1, 3);
         return fields;
     }
 
@@ -290,15 +374,18 @@ public sealed class MainForm : Form
         };
         _runRegister.Dock = DockStyle.Top;
         _runMatrix.Dock = DockStyle.Top;
+        _checkPbx.Dock = DockStyle.Top;
         _loadCfg.Dock = DockStyle.Top;
         _stop.Dock = DockStyle.Top;
         _runRegister.Margin = new Padding(0, 0, 0, 7);
         _runMatrix.Margin = new Padding(0, 0, 0, 7);
+        _checkPbx.Margin = new Padding(0, 0, 0, 7);
         _loadCfg.Margin = new Padding(0, 0, 0, 7);
         _stop.Margin = new Padding(0);
         actions.Controls.Add(_loadCfg);
         actions.Controls.Add(_runRegister);
         actions.Controls.Add(_runMatrix);
+        actions.Controls.Add(_checkPbx);
         actions.Controls.Add(_stop);
         return actions;
     }
@@ -399,19 +486,14 @@ public sealed class MainForm : Form
         _activeRun = new CancellationTokenSource();
         try
         {
-            foreach (var item in new[]
-                     {
-                         (SipTransport.Udp, 5060),
-                         (SipTransport.Tcp, 5060),
-                         (SipTransport.Tls, 5061)
-                     })
+            foreach (var item in baseProfile.MatrixTargets())
             {
                 _activeRun.Token.ThrowIfCancellationRequested();
-                AppendSeparator($"MATRIX: {item.Item1.ToString().ToUpperInvariant()} / {item.Item2} (NO AUTH)");
+                AppendSeparator($"MATRIX: {item.Transport.ToString().ToUpperInvariant()} / {item.Port} (NO AUTH)");
                 var profile = baseProfile with
                 {
-                    Transport = item.Item1,
-                    Port = item.Item2,
+                    Transport = item.Transport,
+                    Port = item.Port,
                     Authenticate = false,
                     Password = string.Empty
                 };
@@ -473,10 +555,77 @@ public sealed class MainForm : Form
         return await engine.RunAsync(profile, token);
     }
 
+    private async Task RunPbxCheckAsync()
+    {
+        if (string.IsNullOrWhiteSpace(_sipUser.Text))
+        {
+            MessageBox.Show(this, "Enter the SIP user / extension first.", "Check the probe configuration",
+                MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(_apiClientId.Text) || string.IsNullOrWhiteSpace(_apiSecret.Text))
+        {
+            MessageBox.Show(this, "Enter the Yeastar OpenAPI Client ID and Client Secret on the PBX API tab.",
+                "Check the probe configuration", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        var apiUrl = string.IsNullOrWhiteSpace(_apiUrl.Text)
+            ? "https://" + _server.Text.Trim()
+            : _apiUrl.Text.Trim();
+
+        AppendSeparator("YEASTAR PBX API STATUS");
+        SetRunning(true, "Checking PBX API...");
+        _activeRun = new CancellationTokenSource();
+        try
+        {
+            var diagnostic = new YeastarPbxDiagnostic();
+            diagnostic.EntryAdded += entry =>
+            {
+                if (IsDisposed)
+                    return;
+                if (InvokeRequired)
+                    BeginInvoke(() => AppendEntry(entry));
+                else
+                    AppendEntry(entry);
+            };
+            await diagnostic.RunAsync(new YeastarPbxCheckRequest
+            {
+                ApiBaseUrl = apiUrl,
+                ClientId = _apiClientId.Text,
+                ClientSecret = _apiSecret.Text,
+                ExtensionNumber = _sipUser.Text,
+                AuthenticationName = _authName.Text,
+                TimeoutSeconds = (int)_timeout.Value
+            }, _activeRun.Token);
+            _status.Text = "PBX API check complete";
+        }
+        catch (OperationCanceledException)
+        {
+            AppendLocal(DiagnosticLevel.Warning, "Test cancelled by the operator.");
+            _status.Text = "Cancelled";
+        }
+        catch (Exception ex)
+        {
+            AppendLocal(DiagnosticLevel.Error, ex.Message);
+            _status.Text = "PBX API check failed";
+        }
+        finally
+        {
+            _activeRun.Dispose();
+            _activeRun = null;
+            SetRunning(false, _status.Text);
+        }
+    }
+
     private DiagnosticProfile ReadProfile(bool authenticate) => new()
     {
         Server = _server.Text,
         Port = (int)_port.Value,
+        UdpPort = (int)_udpPort.Value,
+        TcpPort = (int)_tcpPort.Value,
+        TlsPort = (int)_tlsPort.Value,
         Transport = SelectedTransport(),
         SipUser = _sipUser.Text,
         AuthenticationName = _authName.Text,
@@ -486,16 +635,25 @@ public sealed class MainForm : Form
         TimeoutSeconds = (int)_timeout.Value,
         ForceTls12 = _forceTls12.Checked,
         IgnoreTlsCertificateErrors = _ignoreCertificateErrors.Checked,
-        Authenticate = authenticate
+        Authenticate = authenticate,
+        NtpServers = _ntpServers
     };
 
     private SipTransport SelectedTransport() =>
         Enum.TryParse<SipTransport>(_transport.SelectedItem?.ToString(), out var value) ? value : SipTransport.Tls;
 
+    private decimal MatrixPortFor(SipTransport transport) => transport switch
+    {
+        SipTransport.Udp => _udpPort.Value,
+        SipTransport.Tcp => _tcpPort.Value,
+        _ => _tlsPort.Value
+    };
+
     private void SetRunning(bool running, string status)
     {
         _runRegister.Enabled = !running;
         _runMatrix.Enabled = !running;
+        _checkPbx.Enabled = !running;
         _loadCfg.Enabled = !running;
         _stop.Enabled = running;
         _transport.Enabled = !running;
@@ -505,8 +663,8 @@ public sealed class MainForm : Form
 
     private void AppendWelcome()
     {
-        AppendLocal(DiagnosticLevel.Info, "Ready. Start with the no-auth matrix to compare UDP, TCP and TLS safely.");
-        AppendLocal(DiagnosticLevel.Detail, "A 401/407 challenge is a positive reachability result; the authenticated test then proves the credentials.");
+        AppendLocal(DiagnosticLevel.Info, "Ready. Start with the no-auth matrix to compare UDP, TCP and TLS on the configured ports.");
+        AppendLocal(DiagnosticLevel.Detail, "A 401/407 challenge is a positive reachability result; Via rewrite is reported as SIP ALG. Use Check PBX status when OpenAPI credentials are available.");
     }
 
     private void AppendSeparator(string title)
@@ -560,7 +718,7 @@ public sealed class MainForm : Form
 
         var header = new[]
         {
-            "InspireTel SIP Probe v1.0",
+            "InspireTel SIP Probe v1.1",
             $"Exported: {DateTimeOffset.Now:u}",
             $"Server: {_server.Text.Trim()}:{_port.Value}",
             $"Transport: {_transport.SelectedItem}",
@@ -587,85 +745,55 @@ public sealed class MainForm : Form
 
         try
         {
-            var values = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-            foreach (var rawLine in File.ReadLines(dialog.FileName))
-            {
-                var line = rawLine.Trim();
-                if (line.Length == 0 || line.StartsWith('#'))
-                    continue;
-                var separator = line.IndexOf('=');
-                if (separator <= 0)
-                    continue;
-                values[line[..separator].Trim()] = line[(separator + 1)..].Trim();
-            }
-
-            string? Find(params string[] keys) =>
-                keys.Select(key => values.TryGetValue(key, out var value) ? value : null)
-                    .FirstOrDefault(value => !string.IsNullOrWhiteSpace(value));
-
-            var loaded = new List<string>();
-            var server = Find("account.1.sip_server.1.address");
-            if (server is not null)
-            {
-                _server.Text = server;
-                loaded.Add("server");
-            }
-
-            var user = Find("account.1.user_name");
-            if (user is not null)
-            {
-                _sipUser.Text = user;
-                loaded.Add("SIP user");
-            }
-
-            var auth = Find("account.1.auth_name");
-            if (auth is not null)
-            {
-                _authName.Text = auth;
-                loaded.Add("authentication name");
-            }
-
-            var password = Find("account.1.password");
-            if (password is not null)
-            {
-                _password.Text = password;
-                loaded.Add("password (local memory only)");
-            }
-
-            var transport = Find("account.1.sip_server.1.transport_type");
-            var selected = transport switch
-            {
-                "0" => SipTransport.Udp,
-                "1" => SipTransport.Tcp,
-                "2" => SipTransport.Tls,
-                _ => (SipTransport?)null
-            };
-            if (selected is not null)
-            {
-                _transport.SelectedItem = selected.Value.ToString();
-                loaded.Add("transport");
-            }
-
-            if (int.TryParse(Find("account.1.sip_server.1.port"), out var port) && port is >= 1 and <= 65535)
-            {
-                _port.Value = port;
-                loaded.Add("destination port");
-            }
-
-            if (int.TryParse(Find("account.1.sip_server.1.expires"), out var expiry) &&
-                expiry >= _expiry.Minimum && expiry <= _expiry.Maximum)
-            {
-                _expiry.Value = expiry;
-                loaded.Add("registration expiry");
-            }
-
+            var settings = YealinkConfigParser.Parse(File.ReadLines(dialog.FileName));
+            var loaded = settings.LoadedFields;
             if (loaded.Count == 0)
                 throw new FormatException("No supported account.1 Yealink SIP parameters were found.");
+
+            if (settings.Server is not null)
+                _server.Text = settings.Server;
+            if (settings.SipUser is not null)
+                _sipUser.Text = settings.SipUser;
+            if (settings.AuthenticationName is not null)
+                _authName.Text = settings.AuthenticationName;
+            if (settings.Password is not null)
+                _password.Text = settings.Password;
+            if (settings.Transport is not null)
+                _transport.SelectedItem = settings.Transport.Value.ToString();
+            if (settings.Port is not null)
+            {
+                _port.Value = settings.Port.Value;
+                switch (settings.Transport ?? SelectedTransport())
+                {
+                    case SipTransport.Udp:
+                        _udpPort.Value = settings.Port.Value;
+                        break;
+                    case SipTransport.Tcp:
+                        _tcpPort.Value = settings.Port.Value;
+                        break;
+                    default:
+                        _tlsPort.Value = settings.Port.Value;
+                        break;
+                }
+            }
+
+            if (settings.ExpirySeconds is not null &&
+                settings.ExpirySeconds.Value >= _expiry.Minimum &&
+                settings.ExpirySeconds.Value <= _expiry.Maximum)
+            {
+                _expiry.Value = settings.ExpirySeconds.Value;
+            }
+
+            _ntpServers = settings.NtpServers;
+            if (string.IsNullOrWhiteSpace(_apiUrl.Text) && !string.IsNullOrWhiteSpace(_server.Text))
+                _apiUrl.Text = "https://" + _server.Text.Trim();
 
             AppendLocal(DiagnosticLevel.Info,
                 $"Loaded Yealink config '{Path.GetFileName(dialog.FileName)}': {string.Join(", ", loaded)}.");
             AppendLocal(DiagnosticLevel.Detail,
                 "The file remains local. Its password is held only in the password field and is never logged or exported.");
+            foreach (var finding in ClockCertificateCheck.AnalyzeNtpServers(_ntpServers))
+                AppendLocal(finding.Level, finding.Message);
             _status.Text = $"Loaded {Path.GetFileName(dialog.FileName)}";
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or FormatException)
@@ -685,6 +813,8 @@ public sealed class MainForm : Form
             "401/407 challenge — positive result: the PBX is reachable and return traffic works.\n\n" +
             "200 OK — network, PBX and credentials work from this laptop; focus on the handset.\n\n" +
             "Repeated 401 or 403 — credentials, extension transport policy, registration security or blocked IP.\n\n" +
+            "Via sent-by rewritten — SIP ALG on the customer router. received=/rport= alone is normal NAT.\n\n" +
+            "Clock behind/ahead of certificate dates — fix handset NTP (avoid private 172.19.x.x) before blaming TLS.\n\n" +
             "No SIP response after connection — SIP-aware firewall/ALG, proxy interference, or PBX service problem.",
             "SIP Probe interpretation guide",
             MessageBoxButtons.OK,

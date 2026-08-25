@@ -11,6 +11,9 @@ public sealed record DiagnosticProfile
 {
     public required string Server { get; init; }
     public int Port { get; init; } = 5060;
+    public int UdpPort { get; init; } = 5060;
+    public int TcpPort { get; init; } = 5060;
+    public int TlsPort { get; init; } = 5061;
     public SipTransport Transport { get; init; } = SipTransport.Udp;
     public required string SipUser { get; init; }
     public string AuthenticationName { get; init; } = string.Empty;
@@ -21,7 +24,8 @@ public sealed record DiagnosticProfile
     public bool ForceTls12 { get; init; } = true;
     public bool IgnoreTlsCertificateErrors { get; init; }
     public bool Authenticate { get; init; } = true;
-    public string UserAgent { get; init; } = "InspireTel-SIP-Probe/1.0";
+    public string UserAgent { get; init; } = "InspireTel-SIP-Probe/1.1";
+    public IReadOnlyList<string> NtpServers { get; init; } = Array.Empty<string>();
 
     public string EffectiveAuthenticationName =>
         string.IsNullOrWhiteSpace(AuthenticationName) ? SipUser.Trim() : AuthenticationName.Trim();
@@ -32,6 +36,9 @@ public sealed record DiagnosticProfile
             throw new ArgumentException("PBX server is required.", nameof(Server));
         if (Port is < 1 or > 65535)
             throw new ArgumentOutOfRangeException(nameof(Port), "Port must be between 1 and 65535.");
+        ValidatePort(UdpPort, nameof(UdpPort));
+        ValidatePort(TcpPort, nameof(TcpPort));
+        ValidatePort(TlsPort, nameof(TlsPort));
         if (string.IsNullOrWhiteSpace(SipUser))
             throw new ArgumentException("SIP user / extension is required.", nameof(SipUser));
         if (LocalPort is < 0 or > 65535)
@@ -41,6 +48,26 @@ public sealed record DiagnosticProfile
         if (TimeoutSeconds is < 2 or > 60)
             throw new ArgumentOutOfRangeException(nameof(TimeoutSeconds), "Timeout must be between 2 and 60 seconds.");
         return this;
+    }
+
+    public IReadOnlyList<(SipTransport Transport, int Port)> MatrixTargets()
+    {
+        var items = new List<(SipTransport Transport, int Port)>
+        {
+            (SipTransport.Udp, UdpPort),
+            (SipTransport.Tcp, TcpPort),
+            (SipTransport.Tls, TlsPort)
+        };
+        var selected = (Transport, Port);
+        if (!items.Contains(selected))
+            items.Add(selected);
+        return items;
+    }
+
+    private static void ValidatePort(int port, string name)
+    {
+        if (port is < 1 or > 65535)
+            throw new ArgumentOutOfRangeException(name, "Port must be between 1 and 65535.");
     }
 }
 

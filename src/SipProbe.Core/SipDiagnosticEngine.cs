@@ -64,6 +64,11 @@ public sealed class SipDiagnosticEngine
             return Result(false, false, false, null, "DNS resolution failed.");
         }
 
+        foreach (var finding in ClockCertificateCheck.AnalyzeNtpServers(profile.NtpServers))
+            Log(finding.Level, finding.Message);
+
+        await TryCompareHttpsDateAsync(profile, cancellationToken);
+
         var orderedAddresses = addresses
             .OrderBy(address => address.AddressFamily == AddressFamily.InterNetwork ? 0 : 1)
             .ToArray();
@@ -87,7 +92,7 @@ public sealed class SipDiagnosticEngine
                 var firstRequest = BuildRegister(profile, channel.LocalEndPoint, requestUri, callId, fromTag, 1, null, null);
 
                 Log(DiagnosticLevel.Info, "Sending initial REGISTER without credentials (a 401/407 challenge is expected).");
-                await channel.SendAsync(firstRequest, cancellationToken);
+                await channel.SendAsync(firstRequest.Text, cancellationToken);
 
                 SipResponse firstResponse;
                 try
@@ -106,6 +111,7 @@ public sealed class SipDiagnosticEngine
                 }
 
                 LogResponse(firstResponse, "Initial response");
+                LogAlg(firstRequest, firstResponse, channel.LocalEndPoint);
 
                 if (firstResponse.StatusCode == 200)
                 {
@@ -175,7 +181,7 @@ public sealed class SipDiagnosticEngine
                     authorization);
 
                 Log(DiagnosticLevel.Info, "Sending authenticated REGISTER (digest value redacted).");
-                await channel.SendAsync(secondRequest, cancellationToken);
+                await channel.SendAsync(secondRequest.Text, cancellationToken);
                 var finalResponse = await ReceiveFinalResponseAsync(channel, profile.TimeoutSeconds, cancellationToken);
                 LogResponse(finalResponse, "Authenticated response");
 
@@ -252,7 +258,7 @@ public sealed class SipDiagnosticEngine
         }
     }
 
-    private static string BuildRegister(
+    private static SipRegisterMessage BuildRegister(
         DiagnosticProfile profile,
         IPEndPoint local,
         string requestUri,
@@ -268,25 +274,25 @@ public sealed class SipDiagnosticEngine
         var branch = "z9hG4bK-" + Convert.ToHexString(RandomNumberGenerator.GetBytes(10)).ToLowerInvariant();
         var serverHost = FormatHostForUri(profile.Server);
         var user = profile.SipUser;
+        var viaValue = $"SIP/2.0/{transportToken} {localHost}:{local.Port};branch={branch};rport";
+        var contactUri = $"sip:{user}@{localHost}:{local.Port};transport={transportParameter}";
         var builder = new StringBuilder();
 
         builder.Append("REGISTER ").Append(requestUri).Append(" SIP/2.0\r\n");
-        builder.Append("Via: SIP/2.0/").Append(transportToken).Append(' ').Append(localHost).Append(':').Append(local.Port)
-            .Append(";branch=").Append(branch).Append(";rport\r\n");
+        builder.Append("Via: ").Append(viaValue).Append("\r\n");
         builder.Append("Max-Forwards: 70\r\n");
         builder.Append("From: <sip:").Append(user).Append('@').Append(serverHost).Append(">;tag=").Append(fromTag).Append("\r\n");
         builder.Append("To: <sip:").Append(user).Append('@').Append(serverHost).Append(">\r\n");
         builder.Append("Call-ID: ").Append(callId).Append("\r\n");
         builder.Append("CSeq: ").Append(cseq).Append(" REGISTER\r\n");
-        builder.Append("Contact: <sip:").Append(user).Append('@').Append(localHost).Append(':').Append(local.Port)
-            .Append(";transport=").Append(transportParameter).Append(">\r\n");
+        builder.Append("Contact: <").Append(contactUri).Append(">\r\n");
         builder.Append("Expires: ").Append(profile.RegistrationExpirySeconds).Append("\r\n");
         builder.Append("Supported: path, outbound\r\n");
         builder.Append("User-Agent: ").Append(profile.UserAgent).Append("\r\n");
         if (!string.IsNullOrEmpty(authorizationHeaderName) && !string.IsNullOrEmpty(authorizationValue))
             builder.Append(authorizationHeaderName).Append(": ").Append(authorizationValue).Append("\r\n");
         builder.Append("Content-Length: 0\r\n\r\n");
-        return builder.ToString();
+        return new SipRegisterMessage(builder.ToString(), viaValue, contactUri, branch, localHost, local.Port);
     }
 
     private static async Task<SipResponse> ReceiveFinalResponseAsync(
@@ -341,7 +347,7 @@ public sealed class SipDiagnosticEngine
                 headerName,
                 headerValue);
             Log(DiagnosticLevel.Info, "Removing the temporary diagnostic registration binding (Expires: 0).");
-            await channel.SendAsync(unregister, cancellationToken);
+            await channel.SendAsync(unregister.Text, cancellationToken);
             var response = await ReceiveFinalResponseAsync(channel, profile.TimeoutSeconds, cancellationToken);
             if (response.StatusCode == 200)
                 Log(DiagnosticLevel.Success, "Temporary diagnostic registration removed successfully.");
@@ -428,6 +434,47 @@ public sealed class SipDiagnosticEngine
         if (value.StartsWith('[') && value.EndsWith(']'))
             value = value[1..^1];
         return value.TrimEnd('.');
+    }
+
+    private void LogAlg(SipRegisterMessage sent, SipResponse response, IPEndPoint local)
+    {
+        var analysis = SipAlgDetector.Analyze(sent, response, local);
+        foreach (var finding in analysis.Findings)
+            Log(finding.Level, finding.Message);
+    }
+
+    private async Task TryCompareHttpsDateAsync(DiagnosticProfile profile, CancellationToken cancellationToken)
+    {
+        if (IPAddress.TryParse(profile.Server, out _))
+            return;
+
+        try
+        {
+            using var timeout = CreateTimeout(cancellationToken, Math.Min(profile.TimeoutSeconds, 5));
+            using var handler = new HttpClientHandler
+            {
+                ServerCertificateCustomValidationCallback = (_, _, _, _) => true
+            };
+            using var http = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(5) };
+            using var request = new HttpRequestMessage(HttpMethod.Head, $"https://{profile.Server}/");
+            using var response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token);
+            if (response.Headers.Date is DateTimeOffset httpDate)
+            {
+                var finding = ClockCertificateCheck.AnalyzeHttpDate(httpDate, DateTimeOffset.Now);
+                if (finding is not null)
+                    Log(finding.Value.Level, finding.Value.Message);
+            }
+            else
+            {
+                Log(DiagnosticLevel.Detail, "PBX HTTPS response had no Date header, so clock skew versus the PBX could not be measured.");
+            }
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or OperationCanceledException or UriFormatException)
+        {
+            if (cancellationToken.IsCancellationRequested)
+                throw;
+            Log(DiagnosticLevel.Detail, $"Could not read PBX HTTPS Date for clock comparison: {FriendlyException(ex, cancellationToken)}.");
+        }
     }
 
     private static string FormatHost(IPAddress address) =>
@@ -553,15 +600,19 @@ public sealed class SipDiagnosticEngine
                     EnabledSslProtocols = forceTls12 ? SslProtocols.Tls12 : SslProtocols.None,
                     CertificateRevocationCheckMode = X509RevocationMode.NoCheck
                 };
-                await ssl.AuthenticateAsClientAsync(options, cancellationToken);
+                try
+                {
+                    await ssl.AuthenticateAsClientAsync(options, cancellationToken);
+                }
+                catch
+                {
+                    LogCertificateClock(observedCertificate, log);
+                    throw;
+                }
 
                 log(DiagnosticLevel.Success,
                     $"TLS handshake succeeded: protocol={ssl.SslProtocol}; cipher={ssl.NegotiatedCipherSuite}.");
-                if (observedCertificate is not null)
-                {
-                    log(DiagnosticLevel.Detail,
-                        $"Certificate subject={observedCertificate.Subject}; issuer={observedCertificate.Issuer}; valid={observedCertificate.NotBefore:u} to {observedCertificate.NotAfter:u}.");
-                }
+                LogCertificateClock(observedCertificate, log);
                 if (observedErrors == SslPolicyErrors.None)
                     log(DiagnosticLevel.Success, "TLS certificate hostname and trust validation passed.");
                 else if (ignoreCertificateErrors)
@@ -575,6 +626,14 @@ public sealed class SipDiagnosticEngine
                 client.Dispose();
                 throw;
             }
+        }
+
+        private static void LogCertificateClock(X509Certificate2? certificate, Action<DiagnosticLevel, string> log)
+        {
+            if (certificate is null)
+                return;
+            foreach (var finding in ClockCertificateCheck.AnalyzeCertificate(certificate, DateTimeOffset.Now))
+                log(finding.Level, finding.Message);
         }
 
         private static TcpClient CreateClient(IPAddress address, int localPort)

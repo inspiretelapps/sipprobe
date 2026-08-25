@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.Http;
 using System.Net.Sockets;
 using System.Net.Security;
 using System.Security.Authentication;
@@ -13,7 +14,12 @@ var tests = new List<(string Name, Func<Task> Run)>
     ("RFC digest calculation", TestDigestCalculation),
     ("UDP REGISTER exchange", () => TestRegisterExchange(SipTransport.Udp)),
     ("TCP REGISTER exchange", () => TestRegisterExchange(SipTransport.Tcp)),
-    ("TLS REGISTER exchange", () => TestRegisterExchange(SipTransport.Tls))
+    ("TLS REGISTER exchange", () => TestRegisterExchange(SipTransport.Tls)),
+    ("Transport matrix uses configured ports", TestMatrixPorts),
+    ("SIP ALG Via rewrite detection", TestAlgDetection),
+    ("Clock versus certificate and private NTP", TestClockAndNtp),
+    ("Yealink config NTP and ports", TestYealinkParser),
+    ("Yeastar PBX API extension and blocked IP", TestYeastarPbxDiagnostic)
 };
 
 var failed = 0;
@@ -252,8 +258,189 @@ static Dictionary<string, string> ReadRequestHeaders(string request) => request
     .Select(line => line.Split(':', 2))
     .ToDictionary(parts => parts[0], parts => parts[1].Trim(), StringComparer.OrdinalIgnoreCase);
 
+static Task TestMatrixPorts()
+{
+    var profile = new DiagnosticProfile
+    {
+        Server = "pbx.example.com",
+        SipUser = "101",
+        Transport = SipTransport.Tcp,
+        Port = 5090,
+        UdpPort = 5070,
+        TcpPort = 5080,
+        TlsPort = 5061
+    }.Validate();
+    var targets = profile.MatrixTargets();
+    Assert(targets.Contains((SipTransport.Udp, 5070)), "UDP matrix port");
+    Assert(targets.Contains((SipTransport.Tcp, 5080)), "TCP matrix port");
+    Assert(targets.Contains((SipTransport.Tls, 5061)), "TLS matrix port");
+    Assert(targets.Contains((SipTransport.Tcp, 5090)), "custom destination included");
+    Assert(targets.Count == 4, "no duplicate when custom dest is extra");
+    return Task.CompletedTask;
+}
+
+static Task TestAlgDetection()
+{
+    var sent = new SipRegisterMessage(
+        Text: "REGISTER sip:pbx SIP/2.0\r\n",
+        ViaValue: "SIP/2.0/UDP 10.0.0.2:5060;branch=z9hG4bK-abc;rport",
+        ContactUri: "sip:101@10.0.0.2:5060;transport=udp",
+        Branch: "z9hG4bK-abc",
+        SentByHost: "10.0.0.2",
+        SentByPort: 5060);
+    var local = new IPEndPoint(IPAddress.Parse("10.0.0.2"), 5060);
+
+    var intact = SipResponse.Parse(
+        "SIP/2.0 401 Unauthorized\r\n" +
+        "Via: SIP/2.0/UDP 10.0.0.2:5060;branch=z9hG4bK-abc;rport\r\n" +
+        "Content-Length: 0\r\n\r\n");
+    Assert(SipAlgDetector.Analyze(sent, intact, local).Verdict == AlgVerdict.NoRewrite, "intact Via");
+
+    var nat = SipResponse.Parse(
+        "SIP/2.0 401 Unauthorized\r\n" +
+        "Via: SIP/2.0/UDP 10.0.0.2:5060;branch=z9hG4bK-abc;received=198.51.100.9;rport=45000\r\n" +
+        "Content-Length: 0\r\n\r\n");
+    Assert(SipAlgDetector.Analyze(sent, nat, local).Verdict == AlgVerdict.NatMapping, "received/rport is NAT");
+
+    var rewritten = SipResponse.Parse(
+        "SIP/2.0 401 Unauthorized\r\n" +
+        "Via: SIP/2.0/UDP 198.51.100.9:45000;branch=z9hG4bK-abc;rport\r\n" +
+        "Content-Length: 0\r\n\r\n");
+    var alg = SipAlgDetector.Analyze(sent, rewritten, local);
+    Assert(alg.Verdict == AlgVerdict.AlgRewrite, "sent-by rewrite is ALG");
+    Assert(alg.Findings.Any(finding => finding.Message.Contains("SIP ALG likely", StringComparison.Ordinal)), "ALG warning text");
+
+    var compact = SipResponse.Parse(
+        "SIP/2.0 401 Unauthorized\r\n" +
+        "v: SIP/2.0/UDP 10.0.0.2:5060;branch=z9hG4bK-abc;rport\r\n" +
+        "Content-Length: 0\r\n\r\n");
+    Assert(compact.GetHeader("Via")!.Contains("10.0.0.2"), "compact Via header alias");
+    return Task.CompletedTask;
+}
+
+static Task TestClockAndNtp()
+{
+    Assert(ClockCertificateCheck.IsPrivateOrLocalHost("172.19.0.10"), "172.19 is RFC1918");
+    Assert(ClockCertificateCheck.IsPrivateOrLocalHost("192.168.1.1"), "192.168 is RFC1918");
+    Assert(!ClockCertificateCheck.IsPrivateOrLocalHost("pool.ntp.org"), "hostname is not treated as private");
+    Assert(!ClockCertificateCheck.IsPrivateOrLocalHost("1.1.1.1"), "public IP");
+
+    var ntp = ClockCertificateCheck.AnalyzeNtpServers(new[] { "172.19.1.8", "pool.ntp.org" });
+    Assert(ntp.Any(finding => finding.Level == DiagnosticLevel.Warning && finding.Message.Contains("172.19.1.8")), "private NTP warning");
+    Assert(ntp.Any(finding => finding.Message.Contains("pool.ntp.org")), "public NTP noted");
+
+    using var rsa = RSA.Create(2048);
+    var request = new CertificateRequest("CN=pbx.example.com", rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+    using var cert = request.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(30));
+    var inside = ClockCertificateCheck.AnalyzeCertificate(cert, DateTimeOffset.UtcNow);
+    Assert(inside.Any(finding => finding.Level == DiagnosticLevel.Success && finding.Message.Contains("inside the certificate validity")), "clock inside window");
+    var behind = ClockCertificateCheck.AnalyzeCertificate(cert, DateTimeOffset.UtcNow.AddDays(-10));
+    Assert(behind.Any(finding => finding.Level == DiagnosticLevel.Error && finding.Message.Contains("behind")), "clock behind NotBefore");
+    return Task.CompletedTask;
+}
+
+static Task TestYealinkParser()
+{
+    var settings = YealinkConfigParser.Parse(new[]
+    {
+        "account.1.sip_server.1.address = pbx.example.com",
+        "account.1.user_name = 101",
+        "account.1.auth_name = 101abc",
+        "account.1.password = Secret123!",
+        "account.1.sip_server.1.transport_type = 2",
+        "account.1.sip_server.1.port = 5061",
+        "account.1.sip_server.1.expires = 600",
+        "local_time.ntp_server1 = 172.19.0.1",
+        "local_time.ntp_server2 = pool.ntp.org"
+    });
+    Assert(settings.Server == "pbx.example.com", "server");
+    Assert(settings.Transport == SipTransport.Tls, "TLS transport");
+    Assert(settings.Port == 5061, "TLS port from cfg");
+    Assert(settings.NtpServers.Contains("172.19.0.1"), "primary NTP");
+    Assert(settings.NtpServers.Contains("pool.ntp.org"), "secondary NTP");
+    return Task.CompletedTask;
+}
+
+static async Task TestYeastarPbxDiagnostic()
+{
+    var handler = new ScriptedHandler((request, _) =>
+    {
+        var path = request.RequestUri!.AbsolutePath;
+        if (path.EndsWith("/get_token", StringComparison.Ordinal))
+            return Json(new { errcode = 0, errmsg = "SUCCESS", access_token = "token-1" });
+        if (path.Contains("/system/information", StringComparison.Ordinal))
+            return Json(new { errcode = 0, data = new { name = "JQuad", version = "83.18.0.22" } });
+        if (path.Contains("/extension/search", StringComparison.Ordinal))
+        {
+            return Json(new
+            {
+                errcode = 0,
+                data = new[]
+                {
+                    new
+                    {
+                        id = 12,
+                        number = "101",
+                        caller_id_name = "Afrox",
+                        online_status = new
+                        {
+                            sip_phone = new { status = 0, ext_dev_type = "sip" },
+                            linkus_desktop = new { status = 0 },
+                            linkus_mobile = new { status = 0 },
+                            linkus_web = new { status = 0 }
+                        }
+                    }
+                }
+            });
+        }
+        if (path.Contains("/extension/get", StringComparison.Ordinal))
+            return Json(new { errcode = 0, data = new { id = 12, number = "101", transport = "tls", concurrent_registrations = 1, reg_name = "101abc" } });
+        if (path.Contains("/phone/search", StringComparison.Ordinal))
+            return Json(new { errcode = 0, data = new[] { new { mac = "80:5e:c0:00:00:01", model = "T40G", assigned_ext_num = "101", ip = "", firmware = "" } } });
+        if (path.Contains("/blockedip/list", StringComparison.Ordinal))
+            return Json(new { errcode = 0, data = new[] { new { ip = "203.0.113.10", defense_type = "SIP" } } });
+        return Json(new { errcode = 4001, errmsg = "INTERFACE NOT EXIST" });
+    });
+
+    var diagnostic = new YeastarPbxDiagnostic(handler);
+    await diagnostic.RunAsync(new YeastarPbxCheckRequest
+    {
+        ApiBaseUrl = "https://pbx.example.com",
+        ClientId = "id",
+        ClientSecret = "secret-value",
+        ExtensionNumber = "101",
+        AuthenticationName = "wrong-auth"
+    });
+
+    Assert(diagnostic.Entries.Any(entry => entry.Message.Contains("OpenAPI authentication succeeded")), "token");
+    Assert(diagnostic.Entries.Any(entry => entry.Message.Contains("SIP phone is not registered")), "SIP offline");
+    Assert(diagnostic.Entries.Any(entry => entry.Message.Contains("does not match PBX registration name")), "reg name mismatch");
+    Assert(diagnostic.Entries.Any(entry => entry.Message.Contains("no reported IP or firmware")), "phone status empty");
+    Assert(diagnostic.Entries.Any(entry => entry.Message.Contains("blockedip/list")), "blocked IP endpoint");
+    Assert(diagnostic.Entries.All(entry => !entry.Message.Contains("secret-value", StringComparison.Ordinal)), "API secret redaction");
+}
+
+static HttpResponseMessage Json(object payload) =>
+    new(HttpStatusCode.OK)
+    {
+        Content = new StringContent(System.Text.Json.JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json")
+    };
+
 static void Assert(bool condition, string description)
 {
     if (!condition)
         throw new InvalidOperationException("Assertion failed: " + description);
+}
+
+file sealed class ScriptedHandler : HttpMessageHandler
+{
+    private readonly Func<HttpRequestMessage, string, HttpResponseMessage> _handler;
+
+    public ScriptedHandler(Func<HttpRequestMessage, string, HttpResponseMessage> handler) => _handler = handler;
+
+    protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+    {
+        var body = request.Content is null ? string.Empty : await request.Content.ReadAsStringAsync(cancellationToken);
+        return _handler(request, body);
+    }
 }

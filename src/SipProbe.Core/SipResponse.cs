@@ -15,6 +15,9 @@ public sealed class SipResponse
     public string? GetHeader(string name) =>
         _headers.TryGetValue(name, out var values) ? values.FirstOrDefault() : null;
 
+    public IReadOnlyList<string> GetHeaders(string name) =>
+        _headers.TryGetValue(name, out var values) ? values : Array.Empty<string>();
+
     public static SipResponse Parse(string raw)
     {
         if (string.IsNullOrWhiteSpace(raw))
@@ -69,11 +72,21 @@ public sealed class SipResponse
                 continue;
             }
 
-            currentName = line[..separator].Trim();
+            currentName = NormalizeHeaderName(line[..separator].Trim());
             currentValue = line[(separator + 1)..].Trim();
         }
         CommitHeader();
 
         return response;
     }
+
+    private static string NormalizeHeaderName(string name) => name.ToLowerInvariant() switch
+    {
+        "v" => "Via",
+        "m" => "Contact",
+        "i" => "Call-ID",
+        "f" => "From",
+        "t" => "To",
+        _ => name
+    };
 }
