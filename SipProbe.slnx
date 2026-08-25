@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/SipProbe.App/SipProbe.App.csproj" />
+    <Project Path="src/SipProbe.Core/SipProbe.Core.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/SipProbe.SelfTest/SipProbe.SelfTest.csproj" />
+  </Folder>
+</Solution>

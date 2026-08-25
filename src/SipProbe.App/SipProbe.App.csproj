@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>InspireTel.SipProbe.App</RootNamespace>
+    <AssemblyName>InspireTel.SIPProbe</AssemblyName>
+    <Product>InspireTel SIP Probe</Product>
+    <Description>Portable SIP registration and network diagnostic utility.</Description>
+    <Company>InspireTel</Company>
+    <Version>1.0.0</Version>
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../SipProbe.Core/SipProbe.Core.csproj" />
+  </ItemGroup>
+</Project>
