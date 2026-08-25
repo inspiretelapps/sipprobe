@@ -10,6 +10,9 @@ public sealed record YealinkAccountSettings
     public int? Port { get; init; }
     public int? ExpirySeconds { get; init; }
     public IReadOnlyList<string> NtpServers { get; init; } = Array.Empty<string>();
+    public bool? OutboundProxyEnabled { get; init; }
+    public string? OutboundProxyAddress { get; init; }
+    public int? OutboundProxyPort { get; init; }
 
     public IReadOnlyList<string> LoadedFields
     {
@@ -24,8 +27,26 @@ public sealed record YealinkAccountSettings
             if (Port is not null) loaded.Add("destination port");
             if (ExpirySeconds is not null) loaded.Add("registration expiry");
             if (NtpServers.Count > 0) loaded.Add("NTP servers");
+            if (OutboundProxyEnabled is not null) loaded.Add("outbound proxy");
             return loaded;
         }
+    }
+
+    public IReadOnlyList<(DiagnosticLevel Level, string Message)> Warnings()
+    {
+        var warnings = new List<(DiagnosticLevel, string)>();
+        if (OutboundProxyEnabled == true && string.IsNullOrWhiteSpace(OutboundProxyAddress))
+        {
+            warnings.Add((DiagnosticLevel.Warning,
+                "Outbound proxy is enabled but the proxy address is empty. A Yealink can stay on Registering even when TLS to the SIP hostname works from this computer."));
+        }
+        else if (OutboundProxyEnabled == true)
+        {
+            warnings.Add((DiagnosticLevel.Info,
+                $"Outbound proxy is enabled: {OutboundProxyAddress}" +
+                (OutboundProxyPort is null ? "" : $":{OutboundProxyPort}")));
+        }
+        return warnings;
     }
 }
 
@@ -47,7 +68,10 @@ public static class YealinkConfigParser
 
         string? Find(params string[] keys) =>
             keys.Select(key => values.TryGetValue(key, out var value) ? value : null)
-                .FirstOrDefault(value => !string.IsNullOrWhiteSpace(value));
+                .Select(value => value?.Trim())
+                .FirstOrDefault(value =>
+                    !string.IsNullOrWhiteSpace(value) &&
+                    !value.Equals("%NULL%", StringComparison.OrdinalIgnoreCase));
 
         var transport = Find("account.1.sip_server.1.transport_type") switch
         {
@@ -76,6 +100,17 @@ public static class YealinkConfigParser
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToArray();
 
+        bool? outboundEnabled = Find("account.1.outbound_proxy_enable") switch
+        {
+            "1" => true,
+            "0" => false,
+            _ => null
+        };
+        int? outboundPort = null;
+        if (int.TryParse(Find("account.1.outbound_proxy.1.port"), out var parsedOutboundPort) &&
+            parsedOutboundPort is >= 1 and <= 65535)
+            outboundPort = parsedOutboundPort;
+
         return new YealinkAccountSettings
         {
             Server = Find("account.1.sip_server.1.address"),
@@ -85,7 +120,10 @@ public static class YealinkConfigParser
             Transport = transport,
             Port = port,
             ExpirySeconds = expiry,
-            NtpServers = ntp
+            NtpServers = ntp,
+            OutboundProxyEnabled = outboundEnabled,
+            OutboundProxyAddress = Find("account.1.outbound_proxy.1.address"),
+            OutboundProxyPort = outboundPort
         };
     }
 }

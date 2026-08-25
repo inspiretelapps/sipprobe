@@ -794,6 +794,8 @@ public sealed class MainForm : Form
                 "The file remains local. Its password is held only in the password field and is never logged or exported.");
             foreach (var finding in ClockCertificateCheck.AnalyzeNtpServers(_ntpServers))
                 AppendLocal(finding.Level, finding.Message);
+            foreach (var warning in settings.Warnings())
+                AppendLocal(warning.Level, warning.Message);
             _status.Text = $"Loaded {Path.GetFileName(dialog.FileName)}";
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or FormatException)

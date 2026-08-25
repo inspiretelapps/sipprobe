@@ -351,13 +351,19 @@ static Task TestYealinkParser()
         "account.1.sip_server.1.port = 5061",
         "account.1.sip_server.1.expires = 600",
         "local_time.ntp_server1 = 172.19.0.1",
-        "local_time.ntp_server2 = pool.ntp.org"
+        "local_time.ntp_server2 = pool.ntp.org",
+        "account.1.outbound_proxy_enable = 1",
+        "account.1.outbound_proxy.1.address = ",
+        "account.1.sip_server.2.address = %NULL%"
     });
     Assert(settings.Server == "pbx.example.com", "server");
     Assert(settings.Transport == SipTransport.Tls, "TLS transport");
     Assert(settings.Port == 5061, "TLS port from cfg");
     Assert(settings.NtpServers.Contains("172.19.0.1"), "primary NTP");
     Assert(settings.NtpServers.Contains("pool.ntp.org"), "secondary NTP");
+    Assert(settings.OutboundProxyEnabled == true, "outbound proxy enabled");
+    Assert(string.IsNullOrWhiteSpace(settings.OutboundProxyAddress), "empty outbound proxy");
+    Assert(settings.Warnings().Any(warning => warning.Message.Contains("empty", StringComparison.OrdinalIgnoreCase)), "empty proxy warning");
     return Task.CompletedTask;
 }
 

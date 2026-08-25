@@ -106,6 +106,19 @@ public sealed class MainWindow : Window
 
         Content = BuildRoot();
         AppendWelcome();
+        Opened += async (_, _) =>
+        {
+            if (string.IsNullOrWhiteSpace(Program.StartupCfgPath))
+                return;
+            try
+            {
+                ApplyYealinkSettings(Program.StartupCfgPath, YealinkConfigParser.Parse(await File.ReadAllLinesAsync(Program.StartupCfgPath)));
+            }
+            catch (Exception ex)
+            {
+                await ShowAlert("Could not load Yealink configuration", ex.Message);
+            }
+        };
     }
 
     private Control BuildRoot()
@@ -659,61 +672,67 @@ public sealed class MainWindow : Window
         try
         {
             var path = file.TryGetLocalPath() ?? file.Path.LocalPath;
-            var settings = YealinkConfigParser.Parse(await File.ReadAllLinesAsync(path));
-            var loaded = settings.LoadedFields;
-            if (loaded.Count == 0)
-                throw new FormatException("No supported account.1 Yealink SIP parameters were found.");
-
-            if (settings.Server is not null)
-                _server.Text = settings.Server;
-            if (settings.SipUser is not null)
-                _sipUser.Text = settings.SipUser;
-            if (settings.AuthenticationName is not null)
-                _authName.Text = settings.AuthenticationName;
-            if (settings.Password is not null)
-                _password.Text = settings.Password;
-            if (settings.Transport is not null)
-                _transport.SelectedItem = settings.Transport.Value.ToString();
-            if (settings.Port is not null)
-            {
-                _port.Value = settings.Port.Value;
-                switch (settings.Transport ?? SelectedTransport())
-                {
-                    case SipTransport.Udp:
-                        _udpPort.Value = settings.Port.Value;
-                        break;
-                    case SipTransport.Tcp:
-                        _tcpPort.Value = settings.Port.Value;
-                        break;
-                    default:
-                        _tlsPort.Value = settings.Port.Value;
-                        break;
-                }
-            }
-
-            if (settings.ExpirySeconds is not null &&
-                settings.ExpirySeconds.Value >= _expiry.Minimum &&
-                settings.ExpirySeconds.Value <= _expiry.Maximum)
-            {
-                _expiry.Value = settings.ExpirySeconds.Value;
-            }
-
-            _ntpServers = settings.NtpServers;
-            if (string.IsNullOrWhiteSpace(_apiUrl.Text) && !string.IsNullOrWhiteSpace(_server.Text))
-                _apiUrl.Text = "https://" + _server.Text.Trim();
-
-            AppendLocal(DiagnosticLevel.Info,
-                $"Loaded Yealink config '{Path.GetFileName(path)}': {string.Join(", ", loaded)}.");
-            AppendLocal(DiagnosticLevel.Detail,
-                "The file remains local. Its password is held only in the password field and is never logged or exported.");
-            foreach (var finding in ClockCertificateCheck.AnalyzeNtpServers(_ntpServers))
-                AppendLocal(finding.Level, finding.Message);
-            _status.Text = $"Loaded {Path.GetFileName(path)}";
+            ApplyYealinkSettings(path, YealinkConfigParser.Parse(await File.ReadAllLinesAsync(path)));
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or FormatException)
         {
             await ShowAlert("Could not load Yealink configuration", ex.Message);
         }
+    }
+
+    private void ApplyYealinkSettings(string path, YealinkAccountSettings settings)
+    {
+        var loaded = settings.LoadedFields;
+        if (loaded.Count == 0)
+            throw new FormatException("No supported account.1 Yealink SIP parameters were found.");
+
+        if (settings.Server is not null)
+            _server.Text = settings.Server;
+        if (settings.SipUser is not null)
+            _sipUser.Text = settings.SipUser;
+        if (settings.AuthenticationName is not null)
+            _authName.Text = settings.AuthenticationName;
+        if (settings.Password is not null)
+            _password.Text = settings.Password;
+        if (settings.Transport is not null)
+            _transport.SelectedItem = settings.Transport.Value.ToString();
+        if (settings.Port is not null)
+        {
+            _port.Value = settings.Port.Value;
+            switch (settings.Transport ?? SelectedTransport())
+            {
+                case SipTransport.Udp:
+                    _udpPort.Value = settings.Port.Value;
+                    break;
+                case SipTransport.Tcp:
+                    _tcpPort.Value = settings.Port.Value;
+                    break;
+                default:
+                    _tlsPort.Value = settings.Port.Value;
+                    break;
+            }
+        }
+
+        if (settings.ExpirySeconds is not null &&
+            settings.ExpirySeconds.Value >= _expiry.Minimum &&
+            settings.ExpirySeconds.Value <= _expiry.Maximum)
+        {
+            _expiry.Value = settings.ExpirySeconds.Value;
+        }
+
+        _ntpServers = settings.NtpServers;
+        if (string.IsNullOrWhiteSpace(_apiUrl.Text) && !string.IsNullOrWhiteSpace(_server.Text))
+            _apiUrl.Text = "https://" + _server.Text.Trim();
+
+        AppendLocal(DiagnosticLevel.Info,
+            $"Loaded Yealink config '{Path.GetFileName(path)}': {string.Join(", ", loaded)}.");
+        AppendLocal(DiagnosticLevel.Detail,
+            "The file remains local. Its password is held only in the password field and is never logged or exported.");
+        foreach (var finding in ClockCertificateCheck.AnalyzeNtpServers(_ntpServers))
+            AppendLocal(finding.Level, finding.Message);
+        foreach (var warning in settings.Warnings())
+            AppendLocal(warning.Level, warning.Message);
+        _status.Text = $"Loaded {Path.GetFileName(path)}";
     }
 
     private async Task ShowAlert(string title, string message)
