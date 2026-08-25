@@ -15,7 +15,14 @@ public sealed class MainWindow : Window
 {
     private readonly TextBox _server = Field("pbx.example.com");
     private readonly NumericUpDown _port = NumberField(1, 65535, 5061);
-    private readonly ComboBox _transport = new() { HorizontalAlignment = HorizontalAlignment.Stretch, MinHeight = 34 };
+    private readonly ComboBox _transport = new()
+    {
+        HorizontalAlignment = HorizontalAlignment.Stretch,
+        Height = 38,
+        VerticalContentAlignment = VerticalAlignment.Center,
+        Padding = new Thickness(12, 0),
+        CornerRadius = new CornerRadius(9)
+    };
     private readonly TextBox _sipUser = Field("Extension / SIP user");
     private readonly TextBox _authName = Field("Registration / authentication name");
     private readonly TextBox _password = Field("Not saved or logged");
@@ -54,9 +61,9 @@ public sealed class MainWindow : Window
     };
     private readonly Border _resultBanner = new()
     {
-        CornerRadius = new CornerRadius(10),
-        Padding = new Thickness(14, 12),
-        Margin = new Thickness(12, 12, 12, 0)
+        CornerRadius = new CornerRadius(12),
+        Padding = new Thickness(16, 14),
+        Margin = new Thickness(14, 14, 14, 0)
     };
     private readonly TextBlock _resultTitle = new() { FontSize = 17, FontWeight = FontWeight.SemiBold };
     private readonly TextBlock _resultDetail = new()
@@ -69,9 +76,12 @@ public sealed class MainWindow : Window
     private readonly TextBlock _chipConfigText = new() { FontSize = 11.5, FontWeight = FontWeight.Medium };
     private readonly TextBlock _chipPathText = new() { FontSize = 11.5, FontWeight = FontWeight.Medium };
     private readonly TextBlock _chipRegText = new() { FontSize = 11.5, FontWeight = FontWeight.Medium };
-    private readonly Border _chipConfig = new() { CornerRadius = new CornerRadius(8), Padding = new Thickness(8, 5) };
-    private readonly Border _chipPath = new() { CornerRadius = new CornerRadius(8), Padding = new Thickness(8, 5) };
-    private readonly Border _chipReg = new() { CornerRadius = new CornerRadius(8), Padding = new Thickness(8, 5) };
+    private readonly Border _chipConfig = new() { Width = 9, Height = 9, CornerRadius = new CornerRadius(4.5), VerticalAlignment = VerticalAlignment.Center };
+    private readonly Border _chipPath = new() { Width = 9, Height = 9, CornerRadius = new CornerRadius(4.5), VerticalAlignment = VerticalAlignment.Center };
+    private readonly Border _chipReg = new() { Width = 9, Height = 9, CornerRadius = new CornerRadius(4.5), VerticalAlignment = VerticalAlignment.Center };
+    private readonly Border _railLine1 = new() { Height = 1.5, Margin = new Thickness(10, 0), VerticalAlignment = VerticalAlignment.Center };
+    private readonly Border _railLine2 = new() { Height = 1.5, Margin = new Thickness(10, 0), VerticalAlignment = VerticalAlignment.Center };
+    private readonly Border _beacon = new() { Width = 8, Height = 8, CornerRadius = new CornerRadius(4), VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 1, 0, 0) };
     private readonly ToggleSwitch _darkMode = new()
     {
         OnContent = "Dark",
@@ -85,23 +95,25 @@ public sealed class MainWindow : Window
         VerticalAlignment = VerticalAlignment.Center,
         TextTrimming = TextTrimming.CharacterEllipsis
     };
-    private readonly TextBlock _title = new() { Text = "SIP Probe", FontSize = 22, FontWeight = FontWeight.SemiBold, LetterSpacing = -0.4 };
+    private readonly TextBlock _title = new() { Text = "SIP Probe", FontSize = 27, FontWeight = FontWeight.SemiBold, LetterSpacing = -0.6 };
     private readonly TextBlock _subtitle = new()
     {
         Text = "Find out why a handset will not register — without guessing.",
         FontSize = 12.5
     };
     private readonly Border _header = new();
-    private readonly Border _leftCard = new() { CornerRadius = new CornerRadius(14), Padding = new Thickness(16, 14, 16, 10), ClipToBounds = true };
-    private readonly Border _rightCard = new() { CornerRadius = new CornerRadius(14), ClipToBounds = true };
+    private readonly Border _leftCard = new() { CornerRadius = new CornerRadius(18), Padding = new Thickness(20, 18, 20, 12), ClipToBounds = true };
+    private readonly Border _rightCard = new() { CornerRadius = new CornerRadius(18), ClipToBounds = true };
     private readonly Border _logToolbar = new();
+    private readonly Border _logBody = new() { CornerRadius = new CornerRadius(0, 0, 18, 18), ClipToBounds = true };
     private readonly Border _statusBar = new();
     private readonly Border _actionDock = new();
-    private readonly Border _advancedPanel = new() { CornerRadius = new CornerRadius(10), Padding = new Thickness(12, 10, 12, 12), Margin = new Thickness(0, 8, 0, 4) };
+    private readonly Border _advancedPanel = new() { CornerRadius = new CornerRadius(12), Padding = new Thickness(14, 12, 14, 14), Margin = new Thickness(0, 10, 0, 4) };
     private readonly List<TextBlock> _mutedLabels = new();
     private readonly List<Button> _eyeButtons = new();
     private readonly List<Border> _infoIcons = new();
     private readonly List<TextBlock> _infoLetters = new();
+    private readonly List<TemplatedControl> _inputs = new();
 
     private readonly List<DiagnosticLogEntry> _allEntries = new();
     private CancellationTokenSource? _activeRun;
@@ -124,6 +136,12 @@ public sealed class MainWindow : Window
         FontFamily = new FontFamily("SF Pro Text, Helvetica Neue, system-ui");
         FontSize = 13;
 
+        _inputs.AddRange(new TemplatedControl[]
+        {
+            _server, _port, _transport, _sipUser, _authName, _password,
+            _localPort, _expiry, _timeout, _udpPort, _tcpPort, _tlsPort,
+            _apiUrl, _apiClientId, _apiSecret
+        });
         _password.PasswordChar = '•';
         _apiSecret.PasswordChar = '•';
         _logScroll.Content = _logLines;
@@ -136,9 +154,6 @@ public sealed class MainWindow : Window
         StyleAction(_stop, "Stop", "Cancels the test that is currently running.", false);
         StyleAction(_unregister, "Unregister Now", "Removes the diagnostic registration from the PBX so the extension is free again.", false);
         _unregister.IsVisible = false;
-        _chipConfig.Child = _chipConfigText;
-        _chipPath.Child = _chipPathText;
-        _chipReg.Child = _chipRegText;
         ToolTip.SetTip(_keepRegistered, "If ticked, a successful Test SIP Registration stays on the PBX until Unregister Now or the expiry timer. Use this to confirm the binding in Yeastar.");
         StyleGhost(_clear, "Clear");
         StyleGhost(_export, "Export");
@@ -208,7 +223,7 @@ public sealed class MainWindow : Window
 
     private Control BuildRoot()
     {
-        var root = new Grid { RowDefinitions = RowDefinitions.Parse("64,*,36") };
+        var root = new Grid { RowDefinitions = RowDefinitions.Parse("76,*,42") };
         var header = BuildHeader();
         var body = BuildBody();
         var status = BuildStatusBar();
@@ -223,19 +238,26 @@ public sealed class MainWindow : Window
 
     private Control BuildHeader()
     {
-        _header.Padding = new Thickness(22, 0, 18, 0);
+        _header.Padding = new Thickness(24, 0, 22, 0);
         var grid = new Grid { ColumnDefinitions = ColumnDefinitions.Parse("Auto,*,Auto") };
         var mark = new Border
         {
-            Width = 8,
-            Height = 28,
+            Width = 6,
+            Height = 30,
             CornerRadius = new CornerRadius(3),
             Background = Accent(),
-            Margin = new Thickness(0, 0, 12, 0),
+            Margin = new Thickness(0, 0, 14, 0),
             VerticalAlignment = VerticalAlignment.Center
         };
+        var titleRow = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 8,
+            VerticalAlignment = VerticalAlignment.Center,
+            Children = { _title, _beacon }
+        };
         var titles = new StackPanel { Spacing = 1, VerticalAlignment = VerticalAlignment.Center };
-        titles.Children.Add(_title);
+        titles.Children.Add(titleRow);
         titles.Children.Add(_subtitle);
         var brand = new StackPanel
         {
@@ -266,8 +288,8 @@ public sealed class MainWindow : Window
     {
         var body = new Grid
         {
-            ColumnDefinitions = ColumnDefinitions.Parse("430,14,*"),
-            Margin = new Thickness(16, 10, 16, 8)
+            ColumnDefinitions = ColumnDefinitions.Parse("440,20,*"),
+            Margin = new Thickness(22, 16, 22, 14)
         };
         _leftCard.Child = BuildConfigurationPanel();
         _rightCard.Child = BuildLogPanel();
@@ -319,12 +341,26 @@ public sealed class MainWindow : Window
     private Control BuildAdvancedSection()
     {
         var header = new Grid { ColumnDefinitions = ColumnDefinitions.Parse("*,Auto") };
+        var glyph = new TextBlock
+        {
+            Text = "▸",
+            FontSize = 10,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(0, 0, 6, 0)
+        };
         var title = new TextBlock
         {
-            Text = "Advanced",
-            FontSize = 12.5,
-            FontWeight = FontWeight.SemiBold,
+            Text = "ADVANCED",
+            FontSize = 11,
+            FontWeight = FontWeight.Bold,
+            LetterSpacing = 0.8,
             VerticalAlignment = VerticalAlignment.Center
+        };
+        var titleRow = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            VerticalAlignment = VerticalAlignment.Center,
+            Children = { glyph, title }
         };
         var chevron = new TextBlock
         {
@@ -332,10 +368,11 @@ public sealed class MainWindow : Window
             FontSize = 11.5,
             VerticalAlignment = VerticalAlignment.Center
         };
+        _mutedLabels.Add(glyph);
         _mutedLabels.Add(title);
         _mutedLabels.Add(chevron);
         Grid.SetColumn(chevron, 1);
-        header.Children.Add(title);
+        header.Children.Add(titleRow);
         header.Children.Add(chevron);
 
         var body = BuildAdvanced();
@@ -354,6 +391,7 @@ public sealed class MainWindow : Window
         toggle.Click += (_, _) =>
         {
             body.IsVisible = !body.IsVisible;
+            glyph.Text = body.IsVisible ? "▾" : "▸";
             chevron.Text = body.IsVisible ? "Hide" : "Show extra ports, TLS and PBX API";
         };
 
@@ -431,9 +469,9 @@ public sealed class MainWindow : Window
     {
         var grid = new Grid
         {
-            ColumnDefinitions = ColumnDefinitions.Parse("*,10,*"),
-            RowDefinitions = RowDefinitions.Parse("Auto,8,Auto,8,Auto,8,Auto"),
-            Margin = new Thickness(0, 14, 0, 0)
+            ColumnDefinitions = ColumnDefinitions.Parse("*,12,*"),
+            RowDefinitions = RowDefinitions.Parse("Auto,10,Auto,10,Auto,10,Auto"),
+            Margin = new Thickness(0, 16, 0, 0)
         };
         Place(grid, _loadCfg, 0, 0);
         Place(grid, _runMatrix, 0, 2);
@@ -452,31 +490,30 @@ public sealed class MainWindow : Window
 
     private Control BuildLogPanel()
     {
-        var panel = new Grid { RowDefinitions = RowDefinitions.Parse("Auto,48,*") };
-        var chips = new StackPanel
-        {
-            Orientation = Orientation.Horizontal,
-            Spacing = 8,
-            Margin = new Thickness(12, 12, 12, 0)
-        };
-        chips.Children.Add(_chipConfig);
-        chips.Children.Add(_chipPath);
-        chips.Children.Add(_chipReg);
+        var panel = new Grid { RowDefinitions = RowDefinitions.Parse("Auto,*") };
+        var chips = BuildSignalRail();
         var headline = new StackPanel { Spacing = 0 };
         headline.Children.Add(_resultTitle);
         headline.Children.Add(_resultDetail);
         _resultBanner.Child = headline;
-        var top = new StackPanel { Spacing = 0 };
+        var top = new StackPanel { Spacing = 0, Margin = new Thickness(0, 0, 0, 14) };
         top.Children.Add(chips);
         top.Children.Add(_resultBanner);
 
-        var toolbar = new Grid { ColumnDefinitions = ColumnDefinitions.Parse("*,Auto,Auto"), Margin = new Thickness(14, 0) };
+        var toolbar = new Grid
+        {
+            ColumnDefinitions = ColumnDefinitions.Parse("*,Auto,Auto"),
+            Margin = new Thickness(14, 0),
+            Height = 48,
+            VerticalAlignment = VerticalAlignment.Center
+        };
         var title = new TextBlock
         {
-            Text = "Live trace",
+            Text = "LIVE TRACE",
             Foreground = new SolidColorBrush(Color.FromRgb(210, 230, 226)),
-            FontWeight = FontWeight.SemiBold,
-            FontSize = 13,
+            FontWeight = FontWeight.Bold,
+            FontSize = 11,
+            LetterSpacing = 0.8,
             VerticalAlignment = VerticalAlignment.Center
         };
         _clear.Margin = new Thickness(0, 0, 8, 0);
@@ -492,13 +529,53 @@ public sealed class MainWindow : Window
         _logScroll.Background = new SolidColorBrush(Color.FromRgb(10, 18, 20));
         _logScroll.HorizontalScrollBarVisibility = ScrollBarVisibility.Auto;
         _logScroll.VerticalScrollBarVisibility = ScrollBarVisibility.Auto;
-        Grid.SetRow(_logToolbar, 1);
-        Grid.SetRow(_logScroll, 2);
+
+        var body = new Grid { RowDefinitions = RowDefinitions.Parse("Auto,*") };
+        Grid.SetRow(_logToolbar, 0);
+        Grid.SetRow(_logScroll, 1);
+        body.Children.Add(_logToolbar);
+        body.Children.Add(_logScroll);
+        _logBody.Background = new SolidColorBrush(Color.FromRgb(10, 18, 20));
+        _logBody.Child = body;
+
+        Grid.SetRow(top, 0);
+        Grid.SetRow(_logBody, 1);
         panel.Children.Add(top);
-        panel.Children.Add(_logToolbar);
-        panel.Children.Add(_logScroll);
+        panel.Children.Add(_logBody);
         return panel;
     }
+
+    private Control BuildSignalRail()
+    {
+        var grid = new Grid
+        {
+            ColumnDefinitions = ColumnDefinitions.Parse("Auto,36,Auto,36,Auto"),
+            HorizontalAlignment = HorizontalAlignment.Left,
+            Margin = new Thickness(14, 14, 14, 0)
+        };
+        var node1 = RailNode(_chipConfig, _chipConfigText);
+        var node2 = RailNode(_chipPath, _chipPathText);
+        var node3 = RailNode(_chipReg, _chipRegText);
+        Grid.SetColumn(node1, 0);
+        Grid.SetColumn(_railLine1, 1);
+        Grid.SetColumn(node2, 2);
+        Grid.SetColumn(_railLine2, 3);
+        Grid.SetColumn(node3, 4);
+        grid.Children.Add(node1);
+        grid.Children.Add(_railLine1);
+        grid.Children.Add(node2);
+        grid.Children.Add(_railLine2);
+        grid.Children.Add(node3);
+        return grid;
+    }
+
+    private static Control RailNode(Border dot, TextBlock label) => new StackPanel
+    {
+        Orientation = Orientation.Horizontal,
+        Spacing = 7,
+        VerticalAlignment = VerticalAlignment.Center,
+        Children = { dot, label }
+    };
 
     private Control BuildStatusBar()
     {
@@ -735,6 +812,7 @@ public sealed class MainWindow : Window
         _transport.IsEnabled = !running;
         _status.Text = status;
         Cursor = running ? new Cursor(StandardCursorType.Wait) : Cursor.Default;
+        UpdateBeacon(running);
     }
 
     private void AppendWelcome()
@@ -1027,6 +1105,7 @@ public sealed class MainWindow : Window
 
         _unregister.IsVisible = _heldProfile is not null && _activeRun is null;
         _stop.IsVisible = _activeRun is not null || _heldProfile is null;
+        UpdateBeacon();
     }
 
     private async Task ReplaceHeldSessionAsync(IHeldSipRegistration? next)
@@ -1059,29 +1138,50 @@ public sealed class MainWindow : Window
         });
     }
 
-    private static void PaintChip(Border chip, TextBlock label, string state, string text)
+    private static void PaintChip(Border dot, TextBlock label, string state, string text)
     {
         label.Text = text;
-        switch (state)
+        label.FontWeight = state is "ok" or "held" or "fail" or "partial" ? FontWeight.SemiBold : FontWeight.Medium;
+        dot.Background = new SolidColorBrush(state switch
         {
-            case "ok":
-            case "held":
-                chip.Background = new SolidColorBrush(Color.FromRgb(14, 64, 52));
-                label.Foreground = new SolidColorBrush(Color.FromRgb(110, 232, 180));
-                break;
-            case "partial":
-                chip.Background = new SolidColorBrush(Color.FromRgb(64, 48, 14));
-                label.Foreground = new SolidColorBrush(Color.FromRgb(252, 211, 77));
-                break;
-            case "fail":
-                chip.Background = new SolidColorBrush(Color.FromRgb(72, 24, 24));
-                label.Foreground = new SolidColorBrush(Color.FromRgb(252, 165, 165));
-                break;
-            default:
-                chip.Background = new SolidColorBrush(Color.FromRgb(28, 40, 42));
-                label.Foreground = new SolidColorBrush(Color.FromRgb(148, 163, 168));
-                break;
+            "ok" or "held" => Color.FromRgb(52, 211, 153),
+            "partial" => Color.FromRgb(251, 191, 36),
+            "fail" => Color.FromRgb(248, 113, 113),
+            _ => Color.FromRgb(120, 138, 136)
+        });
+    }
+
+    private void UpdateBeacon(bool? runningOverride = null)
+    {
+        Color color;
+        string tip;
+        if (runningOverride ?? _activeRun is not null)
+        {
+            color = Color.FromRgb(251, 191, 36);
+            tip = "Test running";
         }
+        else if (_regState is "ok" or "held")
+        {
+            color = Color.FromRgb(52, 211, 153);
+            tip = "Last result: registered";
+        }
+        else if (_regState == "fail" || _pathState == "fail")
+        {
+            color = Color.FromRgb(248, 113, 113);
+            tip = "Last result: failed";
+        }
+        else if (_pathState is "ok" or "partial" || _configLoaded)
+        {
+            color = Color.FromRgb(56, 178, 172);
+            tip = "Ready for the next step";
+        }
+        else
+        {
+            color = Color.FromRgb(120, 138, 136);
+            tip = "Idle";
+        }
+        _beacon.Background = new SolidColorBrush(color);
+        ToolTip.SetTip(_beacon, tip);
     }
 
     private async Task ShowAlert(string title, string message)
@@ -1116,21 +1216,30 @@ public sealed class MainWindow : Window
         try
         {
             SyncDarkToggle();
-            Background = dark ? Rgb(14, 18, 19) : Rgb(232, 238, 236);
-            _header.Background = dark ? Rgb(14, 18, 19) : Rgb(232, 238, 236);
-            _leftCard.Background = dark ? Rgb(24, 31, 32) : Brushes.White;
-            _leftCard.BorderBrush = dark ? Rgb(42, 54, 55) : Rgb(214, 224, 221);
+            var windowBg = dark ? Rgb(9, 13, 14) : Rgb(226, 233, 231);
+            var cardBg = dark ? Rgb(26, 34, 36) : Rgb(255, 255, 255);
+            var cardHairline = dark ? Rgba(22, 255, 255, 255) : Rgba(18, 0, 0, 0);
+            var cardShadow = dark
+                ? BoxShadows.Parse("0 18 44 -22 #85000000")
+                : BoxShadows.Parse("0 18 44 -22 #22000000");
+            Background = windowBg;
+            _header.Background = windowBg;
+            _leftCard.Background = cardBg;
+            _leftCard.BorderBrush = cardHairline;
             _leftCard.BorderThickness = new Thickness(1);
-            _actionDock.Background = dark ? Rgb(24, 31, 32) : Brushes.White;
-            _actionDock.BorderBrush = dark ? Rgb(42, 54, 55) : Rgb(214, 224, 221);
+            _leftCard.BoxShadow = cardShadow;
+            _actionDock.Background = cardBg;
+            _actionDock.BorderBrush = cardHairline;
             _actionDock.BorderThickness = new Thickness(0, 1, 0, 0);
             _actionDock.ZIndex = 2;
-            _advancedPanel.Background = dark ? Rgb(18, 24, 25) : Rgb(243, 247, 246);
-            _advancedPanel.BorderBrush = dark ? Rgb(42, 54, 55) : Rgb(214, 224, 221);
+            _advancedPanel.Background = dark ? Rgb(19, 25, 27) : Rgb(242, 246, 245);
+            _advancedPanel.BorderBrush = cardHairline;
             _advancedPanel.BorderThickness = new Thickness(1);
-            _rightCard.BorderBrush = dark ? Rgb(20, 40, 42) : Rgb(16, 28, 30);
+            _rightCard.Background = cardBg;
+            _rightCard.BorderBrush = cardHairline;
             _rightCard.BorderThickness = new Thickness(1);
-            _statusBar.Background = dark ? Rgb(14, 18, 19) : Rgb(232, 238, 236);
+            _rightCard.BoxShadow = cardShadow;
+            _statusBar.Background = windowBg;
             _title.Foreground = dark ? Rgb(236, 245, 243) : Rgb(12, 32, 34);
             _subtitle.Foreground = dark ? Rgb(156, 178, 176) : Rgb(90, 110, 108);
             _status.Foreground = dark ? Rgb(156, 178, 176) : Rgb(90, 110, 108);
@@ -1141,6 +1250,23 @@ public sealed class MainWindow : Window
                 icon.BorderBrush = muted;
             foreach (var letter in _infoLetters)
                 letter.Foreground = muted;
+            var railInk = dark ? Rgb(214, 228, 225) : Rgb(28, 46, 48);
+            var railLine = dark ? Rgb(42, 54, 55) : Rgb(214, 224, 221);
+            _chipConfigText.Foreground = railInk;
+            _chipPathText.Foreground = railInk;
+            _chipRegText.Foreground = railInk;
+            _railLine1.Background = railLine;
+            _railLine2.Background = railLine;
+            var fieldBg = dark ? Rgb(36, 47, 49) : Rgb(246, 249, 248);
+            var fieldBorder = dark ? Rgb(54, 68, 70) : Rgb(222, 230, 228);
+            var fieldInk = dark ? Rgb(232, 241, 239) : Rgb(20, 36, 38);
+            foreach (var input in _inputs)
+            {
+                input.Background = fieldBg;
+                input.BorderBrush = fieldBorder;
+                input.BorderThickness = new Thickness(1);
+                input.Foreground = fieldInk;
+            }
             StyleAction(_runRegister, "Test SIP Registration",
                 "Sends one authenticated REGISTER with these credentials. Tick Keep Registered On The PBX so you can confirm it in Yeastar.", true, dark);
             StyleAction(_runMatrix, "Test Path",
@@ -1152,6 +1278,9 @@ public sealed class MainWindow : Window
             StyleAction(_stop, "Stop", "Cancels the test that is currently running.", false, dark);
             StyleAction(_unregister, "Unregister Now",
                 "Removes the diagnostic registration from the PBX so the extension is free again.", false, dark);
+            var cautionInk = new SolidColorBrush(Color.FromRgb(214, 118, 88));
+            _unregister.Background = new SolidColorBrush(Color.FromArgb(dark ? (byte)46 : (byte)26, 196, 92, 64));
+            TintButtonText(_unregister, cautionInk);
             _keepRegistered.Foreground = dark ? Rgb(210, 230, 226) : Rgb(24, 42, 44);
             StyleGhost(_clear, "Clear", dark);
             StyleGhost(_export, "Export", dark);
@@ -1257,11 +1386,12 @@ public sealed class MainWindow : Window
 
     private TextBlock SectionTitle(string text) => new()
     {
-        Text = text,
-        FontSize = 13,
-        FontWeight = FontWeight.SemiBold,
+        Text = text.ToUpperInvariant(),
+        FontSize = 11,
+        FontWeight = FontWeight.Bold,
         Foreground = Accent(),
-        Margin = new Thickness(0, 4, 0, 0)
+        LetterSpacing = 0.8,
+        Margin = new Thickness(0, 6, 0, 0)
     };
 
     private static Control TwoCol(Control left, Control right)
@@ -1327,9 +1457,9 @@ public sealed class MainWindow : Window
         content.Children.Add(label);
         content.Children.Add(info);
         button.Content = content;
-        button.Height = primary ? 44 : 38;
-        button.CornerRadius = new CornerRadius(10);
-        button.BorderThickness = primary ? new Thickness(0) : new Thickness(1);
+        button.Height = primary ? 46 : 40;
+        button.CornerRadius = new CornerRadius(12);
+        button.BorderThickness = new Thickness(0);
         button.Padding = new Thickness(8, 0);
         if (primary)
         {
@@ -1340,9 +1470,8 @@ public sealed class MainWindow : Window
         }
         else
         {
-            button.Background = dark ? Rgb(36, 46, 47) : Rgb(241, 246, 245);
-            button.BorderBrush = dark ? Rgb(58, 74, 74) : Rgb(198, 214, 211);
-            var ink = dark ? Rgb(230, 240, 238) : Rgb(24, 42, 44);
+            button.Background = dark ? Rgb(40, 52, 54) : Rgb(236, 242, 241);
+            var ink = dark ? Rgb(232, 241, 239) : Rgb(24, 42, 44);
             button.Foreground = ink;
             label.Foreground = ink;
             info.Foreground = ink;
@@ -1351,12 +1480,24 @@ public sealed class MainWindow : Window
         ToolTip.SetShowDelay(button, 150);
     }
 
+    private static void TintButtonText(Button button, IBrush color)
+    {
+        if (button.Content is StackPanel stack)
+        {
+            foreach (var child in stack.Children)
+            {
+                if (child is TextBlock text)
+                    text.Foreground = color;
+            }
+        }
+    }
+
     private static void StyleGhost(Button button, string title, bool dark = false)
     {
         button.Content = title;
-        button.Height = 30;
-        button.Padding = new Thickness(10, 0);
-        button.CornerRadius = new CornerRadius(8);
+        button.Height = 32;
+        button.Padding = new Thickness(12, 0);
+        button.CornerRadius = new CornerRadius(9);
         button.BorderThickness = new Thickness(0);
         button.Background = dark ? Rgb(28, 40, 42) : Rgb(36, 56, 58);
         button.Foreground = new SolidColorBrush(Color.FromRgb(210, 230, 226));
@@ -1366,7 +1507,10 @@ public sealed class MainWindow : Window
     {
         Watermark = watermark,
         HorizontalAlignment = HorizontalAlignment.Stretch,
-        MinHeight = 34
+        Height = 38,
+        VerticalContentAlignment = VerticalAlignment.Center,
+        CornerRadius = new CornerRadius(9),
+        Padding = new Thickness(12, 0)
     };
 
     private static NumericUpDown NumberField(decimal min, decimal max, decimal value) => new()
@@ -1377,7 +1521,10 @@ public sealed class MainWindow : Window
         Increment = 1,
         FormatString = "0",
         HorizontalAlignment = HorizontalAlignment.Stretch,
-        MinHeight = 34,
+        Height = 38,
+        VerticalContentAlignment = VerticalAlignment.Center,
+        Padding = new Thickness(12, 0),
+        CornerRadius = new CornerRadius(9),
         ShowButtonSpinner = false,
         AllowSpin = true
     };
@@ -1385,6 +1532,8 @@ public sealed class MainWindow : Window
     private static SolidColorBrush Accent() => new(Color.FromRgb(14, 122, 122));
 
     private static SolidColorBrush Rgb(byte r, byte g, byte b) => new(Color.FromRgb(r, g, b));
+
+    private static SolidColorBrush Rgba(byte a, byte r, byte g, byte b) => new(Color.FromArgb(a, r, g, b));
 
     private const string InterpretationText =
         "TEST PATH — tries UDP, TCP and TLS without a password.\n" +
