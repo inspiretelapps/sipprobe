@@ -234,6 +234,10 @@ public sealed class MainForm : Form
         RoundCorners(_rightCard, 18);
         RoundCorners(_advancedPanel, 12);
         RoundCorners(_resultBanner, 12);
+        foreach (var button in new[] { _loadCfg, _runMatrix, _runRegister, _checkPbx, _stop, _unregister })
+            RoundCorners(button, 12);
+        RoundCorners(_clear, 9);
+        RoundCorners(_export, 9);
 
         Controls.Add(BuildRoot());
         ApplyTheme();
@@ -1587,8 +1591,11 @@ public sealed class MainForm : Form
             if (control.Width <= 1 || control.Height <= 1)
                 return;
             using var path = RoundedRectPath(new Rectangle(0, 0, control.Width, control.Height), radius);
+            var previous = control.Region;
             control.Region = new Region(path);
+            previous?.Dispose();
         }
+
         control.Resize += (_, _) => Apply();
         Apply();
     }
@@ -1633,7 +1640,6 @@ public sealed class MainForm : Form
             button.BackColor = dark ? Color.FromArgb(40, 52, 54) : Color.FromArgb(236, 242, 241);
             button.ForeColor = dark ? Color.FromArgb(232, 241, 239) : Color.FromArgb(24, 42, 44);
         }
-        RoundCorners(button, 12);
         _tips.SetToolTip(button, tip);
     }
 
@@ -1648,7 +1654,6 @@ public sealed class MainForm : Form
         button.ForeColor = dark ? Color.FromArgb(186, 210, 206) : Color.FromArgb(210, 230, 226);
         button.FlatAppearance.BorderSize = 0;
         button.Font = new Font("Segoe UI Semibold", 9f);
-        RoundCorners(button, 9);
     }
 
     private static NumericUpDown NumberField(decimal min, decimal max, decimal value) => new()
