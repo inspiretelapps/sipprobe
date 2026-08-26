@@ -274,7 +274,7 @@ public sealed class MainWindow : Window
             Children =
             {
                 _darkMode,
-                Muted("v1.3  ·  passwords never logged")
+                Muted("v1.3")
             }
         };
         Grid.SetColumn(tools, 2);

@@ -141,7 +141,7 @@ public sealed class MainForm : Form
     };
     private readonly Label _version = new()
     {
-        Text = "v1.3  ·  passwords never logged",
+        Text = "v1.3",
         AutoSize = true,
         Font = new Font("Segoe UI", 9f),
         ForeColor = Color.FromArgb(90, 110, 108)
