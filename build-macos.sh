@@ -5,7 +5,7 @@ root="$(cd "$(dirname "$0")" && pwd)"
 project="$root/src/SipProbe.Mac/SipProbe.Mac.csproj"
 app_name="InspireTel SIP Probe"
 executable="InspireTel.SIPProbe"
-version="1.3.2"
+version="1.3.3"
 
 dotnet run --project "$root/tests/SipProbe.SelfTest/SipProbe.SelfTest.csproj" -c Release
 

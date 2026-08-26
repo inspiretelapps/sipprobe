@@ -60,6 +60,10 @@ public sealed class MainWindow : Window
         Content = "Keep Registered On The PBX",
         IsChecked = true
     };
+    private readonly CheckBox _relayToPbx = new()
+    {
+        Content = "Relay the handset to the PBX"
+    };
     private readonly Border _resultBanner = new()
     {
         CornerRadius = new CornerRadius(12),
@@ -164,6 +168,9 @@ public sealed class MainWindow : Window
         StyleAction(_unregister, "Unregister Now", "Removes the diagnostic registration from the PBX so the extension is free again.", false);
         StyleAction(_capture, "Listen For Handset", CaptureTip, false);
         _unregister.IsVisible = false;
+        ToolTip.SetTip(_relayToPbx,
+            "While listening, forward the handset's SIP to the PBX using the settings above. This laptop does the DNS lookup and TLS handshake, " +
+            "so if the handset registers this way its credentials and SIP stack are fine and the fault is in its own path.");
         ToolTip.SetTip(_keepRegistered, "If ticked, a successful Test SIP Registration stays on the PBX until Unregister Now or the expiry timer. Use this to confirm the binding in Yeastar.");
         StyleGhost(_clear, "Clear");
         StyleGhost(_export, "Export");
@@ -495,8 +502,11 @@ public sealed class MainWindow : Window
         Place(grid, _checkPbx, 2, 2);
         Grid.SetColumnSpan(_capture, 3);
         Place(grid, _capture, 4, 0);
-        Grid.SetColumnSpan(_keepRegistered, 3);
-        Place(grid, _keepRegistered, 6, 0);
+        var toggles = new StackPanel { Spacing = 4 };
+        toggles.Children.Add(_relayToPbx);
+        toggles.Children.Add(_keepRegistered);
+        Grid.SetColumnSpan(toggles, 3);
+        Place(grid, toggles, 6, 0);
         Grid.SetColumnSpan(_stop, 3);
         Place(grid, _stop, 8, 0);
         Grid.SetColumnSpan(_unregister, 3);
@@ -823,6 +833,7 @@ public sealed class MainWindow : Window
         _checkPbx.IsEnabled = !running;
         _loadCfg.IsEnabled = !running;
         _keepRegistered.IsEnabled = !running;
+        _relayToPbx.IsEnabled = !running && _captureListener is null;
         _stop.IsEnabled = running;
         _stop.IsVisible = running || _heldProfile is null;
         _unregister.IsVisible = !running && _heldProfile is not null;
@@ -1023,10 +1034,24 @@ public sealed class MainWindow : Window
         try
         {
             AppendSeparator("LISTEN FOR HANDSET");
-            await listener.StartAsync(new SipCaptureOptions { Port = CapturePort });
+            await listener.StartAsync(new SipCaptureOptions
+            {
+                Port = CapturePort,
+                Relay = _relayToPbx.IsChecked == true
+                    ? new SipRelayTarget
+                    {
+                        Server = (_server.Text ?? string.Empty).Trim(),
+                        Port = (int)(_port.Value ?? 5061),
+                        Transport = SelectedTransport(),
+                        ForceTls12 = _forceTls12.IsChecked == true,
+                        IgnoreCertificateErrors = _ignoreCertificateErrors.IsChecked == true
+                    }
+                    : null
+            });
             _captureListener = listener;
             _status.Text = $"Listening for the handset on port {CapturePort}";
             StyleAction(_capture, "Stop Listening", CaptureTip, false, IsDark);
+            _relayToPbx.IsEnabled = false;
         }
         catch (Exception ex)
         {
@@ -1044,6 +1069,7 @@ public sealed class MainWindow : Window
 
         await listener.DisposeAsync();
         StyleAction(_capture, "Listen For Handset", CaptureTip, false, IsDark);
+        _relayToPbx.IsEnabled = true;
         _status.Text = "Stopped listening";
     }
 
@@ -1349,6 +1375,7 @@ public sealed class MainWindow : Window
             _unregister.Background = new SolidColorBrush(Color.FromArgb(dark ? (byte)46 : (byte)26, 196, 92, 64));
             TintButtonText(_unregister, cautionInk);
             _keepRegistered.Foreground = dark ? Rgb(210, 230, 226) : Rgb(24, 42, 44);
+            _relayToPbx.Foreground = _keepRegistered.Foreground;
             StyleGhost(_clear, "Clear", dark);
             StyleGhost(_export, "Export", dark);
             var eyeFill = dark ? Rgb(156, 178, 176) : Rgb(90, 110, 108);

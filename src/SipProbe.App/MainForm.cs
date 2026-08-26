@@ -67,6 +67,11 @@ public sealed class MainForm : Form
         Checked = true,
         AutoSize = true
     };
+    private readonly CheckBox _relayToPbx = new()
+    {
+        Text = "Relay the handset to the PBX",
+        AutoSize = true
+    };
     private readonly CheckBox _darkMode = new()
     {
         Text = "Dark",
@@ -197,6 +202,9 @@ public sealed class MainForm : Form
         StyleGhost(_clear, "Clear");
         StyleGhost(_export, "Export");
         _unregister.Visible = false;
+        _tips.SetToolTip(_relayToPbx,
+            "While listening, forward the handset's SIP to the PBX using the settings above. This laptop does the DNS lookup and TLS handshake, " +
+            "so if the handset registers this way its credentials and SIP stack are fine and the fault is in its own path.");
         _tips.SetToolTip(_keepRegistered,
             "If ticked, a successful Test SIP Registration stays on the PBX until Unregister Now or the expiry timer. Use this to confirm the binding in Yeastar.");
 
@@ -635,8 +643,20 @@ public sealed class MainForm : Form
         grid.Controls.Add(_checkPbx, 1, 1);
         grid.SetColumnSpan(_capture, 2);
         grid.Controls.Add(_capture, 0, 2);
-        grid.SetColumnSpan(_keepRegistered, 2);
-        grid.Controls.Add(_keepRegistered, 0, 3);
+
+        var toggles = new FlowLayoutPanel
+        {
+            AutoSize = true,
+            FlowDirection = FlowDirection.TopDown,
+            WrapContents = false,
+            Margin = new Padding(0, 4, 0, 8)
+        };
+        _relayToPbx.Margin = new Padding(0, 0, 0, 4);
+        _keepRegistered.Margin = new Padding(0);
+        toggles.Controls.Add(_relayToPbx);
+        toggles.Controls.Add(_keepRegistered);
+        grid.SetColumnSpan(toggles, 2);
+        grid.Controls.Add(toggles, 0, 3);
 
         var stopRow = new Panel { Height = 38, Dock = DockStyle.Fill, Margin = new Padding(0, 0, 0, 0) };
         stopRow.Controls.Add(_stop);
@@ -1000,6 +1020,7 @@ public sealed class MainForm : Form
         _checkPbx.Enabled = !running;
         _loadCfg.Enabled = !running;
         _keepRegistered.Enabled = !running;
+        _relayToPbx.Enabled = !running && _captureListener is null;
         _stop.Enabled = running;
         _stop.Visible = running || _heldProfile is null;
         _unregister.Visible = !running && _heldProfile is not null;
@@ -1184,10 +1205,24 @@ public sealed class MainForm : Form
         try
         {
             AppendSeparator("LISTEN FOR HANDSET");
-            await listener.StartAsync(new SipCaptureOptions { Port = CapturePort });
+            await listener.StartAsync(new SipCaptureOptions
+            {
+                Port = CapturePort,
+                Relay = _relayToPbx.Checked
+                    ? new SipRelayTarget
+                    {
+                        Server = _server.Text.Trim(),
+                        Port = (int)_port.Value,
+                        Transport = SelectedTransport(),
+                        ForceTls12 = _forceTls12.Checked,
+                        IgnoreCertificateErrors = _ignoreCertificateErrors.Checked
+                    }
+                    : null
+            });
             _captureListener = listener;
             _status.Text = $"Listening for the handset on port {CapturePort}";
             _capture.Text = "Stop Listening";
+            _relayToPbx.Enabled = false;
         }
         catch (Exception ex)
         {
@@ -1205,6 +1240,7 @@ public sealed class MainForm : Form
 
         await listener.DisposeAsync();
         _capture.Text = "Listen For Handset";
+        _relayToPbx.Enabled = true;
         _status.Text = "Stopped listening";
     }
 
@@ -1456,6 +1492,8 @@ public sealed class MainForm : Form
             _darkMode.BackColor = formBg;
             _keepRegistered.ForeColor = dark ? Color.FromArgb(210, 230, 226) : Color.FromArgb(24, 42, 44);
             _keepRegistered.BackColor = card;
+            _relayToPbx.ForeColor = _keepRegistered.ForeColor;
+            _relayToPbx.BackColor = card;
             _forceTls12.ForeColor = text;
             _forceTls12.BackColor = _advancedPanel.BackColor;
             _ignoreCertificateErrors.BackColor = advancedBg;

@@ -21,6 +21,7 @@ var tests = new List<(string Name, Func<Task> Run)>
     ("Yealink config NTP and ports", TestYealinkParser),
     ("Yealink config blocking-problem audit", TestYealinkAudit),
     ("SIP capture challenges and reveals auth name", TestSipCapture),
+    ("SIP capture answers keepalives and collapses retransmissions", TestSipCaptureAnswersKeepalives),
     ("Yeastar PBX API extension and blocked IP", TestYeastarPbxDiagnostic)
 };
 
@@ -546,6 +547,43 @@ static async Task TestSipCapture()
     Assert(entries.Any(e => e.Message.Contains("Yealink SIP-T40G")), "user agent is surfaced");
     Assert(entries.All(e => !e.Message.Contains("secrethash", StringComparison.Ordinal)), "digest response is never logged");
     Assert(listener.MessageCount == 2, "both messages counted");
+}
+
+static async Task TestSipCaptureAnswersKeepalives()
+{
+    await using var listener = new SipCaptureListener();
+    var port = FreeUdpPort();
+    await listener.StartAsync(new SipCaptureOptions { Port = port });
+
+    using var phone = new UdpClient(AddressFamily.InterNetwork);
+    var target = new IPEndPoint(IPAddress.Loopback, port);
+
+    // A Yealink keep-alive. Earlier builds only answered REGISTER/OPTIONS/SUBSCRIBE,
+    // so INFO went unanswered and the handset retransmitted for ever.
+    var info =
+        $"INFO sip:127.0.0.1:{port} SIP/2.0\r\n" +
+        "Via: SIP/2.0/UDP 10.0.0.9:5060;branch=z9hG4bK-keepalive-1\r\n" +
+        "From: \"101\" <sip:101@10.0.0.9>;tag=keepalive\r\n" +
+        $"To: <sip:127.0.0.1:{port}>\r\n" +
+        "Call-ID: keepalive-test\r\n" +
+        "CSeq: 1 INFO\r\n" +
+        "User-Agent: Yealink SIP-T40G 76.84.0.125\r\n" +
+        "Content-Length: 0\r\n\r\n";
+    var payload = Encoding.UTF8.GetBytes(info);
+    await phone.SendAsync(payload, payload.Length, target);
+
+    var answer = await ReceiveWithTimeout(phone);
+    Assert(answer.StartsWith("SIP/2.0 200", StringComparison.Ordinal), "INFO keep-alive is answered");
+
+    // Resending the identical transaction should collapse rather than repeat the full dump.
+    await phone.SendAsync(payload, payload.Length, target);
+    await ReceiveWithTimeout(phone);
+    await phone.SendAsync(payload, payload.Length, target);
+    await ReceiveWithTimeout(phone);
+
+    var starts = listener.Entries.Count(e => e.Message.Contains("INFO sip:"));
+    Assert(starts == 1, $"retransmissions collapse to one full entry (saw {starts})");
+    Assert(listener.Entries.Any(e => e.Message.Contains("retransmitted (x2)")), "retransmission is reported");
 }
 
 static async Task<string> ReceiveWithTimeout(UdpClient client)
