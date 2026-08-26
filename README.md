@@ -2,11 +2,11 @@
 
 A portable diagnostic that tests SIP registration independently of an IP handset. Use it on the customer LAN (or any path that should reach the PBX) to separate **network / credentials / PBX policy** from **phone configuration**.
 
-Windows and macOS builds share the same engine. Packaged apps are attached to [GitHub Releases](https://github.com/inspiretelapps/sipprobe/releases) rather than committed here. Source: [inspiretelapps/sipprobe](https://github.com/inspiretelapps/sipprobe) (private).
+Windows, macOS and Linux builds share the same engine. Packaged apps are attached to [GitHub Releases](https://github.com/inspiretelapps/sipprobe/releases) rather than committed here. Source: [inspiretelapps/sipprobe](https://github.com/inspiretelapps/sipprobe).
 
 The program does not capture audio, install a driver, require administrator rights, or contact any telemetry service. It sends traffic only to the PBX hostname you enter (plus, if you use **Check PBX Status**, the Yeastar OpenAPI URL). SIP and API passwords are held in memory for the life of the process and are **never** written to the live trace or an exported log.
 
-Current app version: **1.3**.
+Current app version: **1.4**.
 
 ## What it proves
 
@@ -32,6 +32,7 @@ Copy the app onto the laptop that should be able to reach the PBX:
 |---|---|---|
 | Windows x64 | `InspireTel.SIPProbe.exe` | Self-contained. No .NET install required. |
 | macOS Apple Silicon | `InspireTel SIP Probe.app` | Self-contained, ad-hoc signed. |
+| Linux x64 | `InspireTel.SIPProbe` | Self-contained. Needs the usual desktop X11 libraries for the GUI; `--cli` runs headless. |
 
 Builds are **unsigned internal diagnostics**. Windows SmartScreen / application control and macOS Gatekeeper may block them. Follow the client's IT policy.
 
@@ -148,9 +149,33 @@ Keep **Ignore certificate errors** unchecked for the real test (under **Advanced
 
 A success obtained while ignoring certificate errors does **not** mean that the Yealink will trust the certificate. Fix the handset clock or certificate chain instead of leaving validation bypassed.
 
-## macOS command line
+## Linux
 
-The Mac binary can run the same engine without the GUI:
+Unpack the tarball and run the binary:
+
+```bash
+tar -xzf InspireTel-SIPProbe-Linux-x64.tar.gz
+cd InspireTel-SIPProbe
+./InspireTel.SIPProbe
+```
+
+The build is self-contained, so no .NET install is needed. The graphical mode still needs the desktop X11 libraries, which are present on any normal desktop install. On a minimal server image:
+
+```bash
+# Debian / Ubuntu
+sudo apt install libx11-6 libice6 libsm6 libfontconfig1
+
+# Fedora / RHEL
+sudo dnf install libX11 libICE libSM fontconfig
+```
+
+On a headless box, skip the GUI entirely and use `--cli` (see below).
+
+**Listen For Handset** binds UDP and TCP 5060. That is above the privileged range, so it does not need root — but make sure no other softphone or PBX service already holds the port.
+
+## macOS and Linux command line
+
+The Mac and Linux binaries can run the same engine without the GUI:
 
 ```bash
 "/Applications/InspireTel SIP Probe.app/Contents/MacOS/InspireTel.SIPProbe" --cli --cfg "/path/to/phone.cfg"
@@ -174,9 +199,14 @@ Requirements: .NET 10 SDK on Windows, macOS, or Linux. Windows targeting packs a
 
 ```bash
 ./build-macos.sh
+./build-linux.sh
 ```
 
-`build-macos.sh` produces `dist/InspireTel-SIPProbe-macOS-arm64.zip`. Set `SIPPROBE_MAC_INTEL=1` to also build the Intel (`osx-x64`) zip. `dist/` is gitignored.
+`build-macos.sh` produces `dist/InspireTel-SIPProbe-macOS-arm64.zip`. Set `SIPPROBE_MAC_INTEL=1` to also build the Intel (`osx-x64`) zip.
+
+`build-linux.sh` produces `dist/InspireTel-SIPProbe-Linux-x64.tar.gz`. Set `SIPPROBE_LINUX_ARM64=1` to also build the `linux-arm64` tarball. It cross-publishes fine from macOS or Windows.
+
+macOS and Linux share the one Avalonia project in `src/SipProbe.Mac`, so a change to the interface lands on both. `dist/` is gitignored.
 
 Automated tests:
 

@@ -146,7 +146,8 @@ public sealed class MainWindow : Window
         MinWidth = 1080;
         MinHeight = 700;
         WindowStartupLocation = WindowStartupLocation.CenterScreen;
-        FontFamily = new FontFamily("SF Pro Text, Helvetica Neue, system-ui");
+        FontFamily = new FontFamily(
+            "SF Pro Text, Helvetica Neue, Inter, Noto Sans, DejaVu Sans, Liberation Sans, system-ui, sans-serif");
         FontSize = 13;
 
         _inputs.AddRange(new TemplatedControl[]
@@ -297,7 +298,7 @@ public sealed class MainWindow : Window
             Children =
             {
                 _darkMode,
-                Muted("v1.3")
+                Muted("v1.4")
             }
         };
         Grid.SetColumn(tools, 2);
@@ -881,7 +882,8 @@ public sealed class MainWindow : Window
         {
             Text = text,
             Foreground = new SolidColorBrush(color),
-            FontFamily = new FontFamily("IBM Plex Mono, Menlo, SF Mono, ui-monospace, monospace"),
+            FontFamily = new FontFamily(
+                "IBM Plex Mono, Menlo, SF Mono, DejaVu Sans Mono, Liberation Mono, Noto Sans Mono, ui-monospace, monospace"),
             FontSize = 12,
             TextWrapping = TextWrapping.NoWrap,
             TextTrimming = TextTrimming.None,
@@ -917,7 +919,7 @@ public sealed class MainWindow : Window
         var path = file.TryGetLocalPath() ?? file.Path.LocalPath;
         var header = new[]
         {
-            "InspireTel SIP Probe v1.3 (macOS)",
+            $"InspireTel SIP Probe v1.4 ({PlatformName})",
             $"Exported: {DateTimeOffset.Now:u}",
             $"Server: {(_server.Text ?? string.Empty).Trim()}:{_port.Value}",
             $"Transport: {_transport.SelectedItem}",
@@ -1622,6 +1624,12 @@ public sealed class MainWindow : Window
         ShowButtonSpinner = false,
         AllowSpin = true
     };
+
+    private static string PlatformName =>
+        OperatingSystem.IsMacOS() ? "macOS"
+        : OperatingSystem.IsLinux() ? "Linux"
+        : OperatingSystem.IsWindows() ? "Windows"
+        : "desktop";
 
     private static SolidColorBrush Accent() => new(Color.FromRgb(14, 122, 122));
 

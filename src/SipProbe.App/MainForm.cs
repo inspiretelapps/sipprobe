@@ -147,7 +147,7 @@ public sealed class MainForm : Form
     };
     private readonly Label _version = new()
     {
-        Text = "v1.3",
+        Text = "v1.4",
         AutoSize = true,
         Font = new Font("Segoe UI", 9f),
         ForeColor = Color.FromArgb(90, 110, 108)
@@ -1088,7 +1088,7 @@ public sealed class MainForm : Form
 
         var header = new[]
         {
-            "InspireTel SIP Probe v1.3 (Windows)",
+            "InspireTel SIP Probe v1.4 (Windows)",
             $"Exported: {DateTimeOffset.Now:u}",
             $"Server: {_server.Text.Trim()}:{_port.Value}",
             $"Transport: {_transport.SelectedItem}",
