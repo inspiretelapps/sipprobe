@@ -11,7 +11,7 @@
     <Product>InspireTel SIP Probe</Product>
     <Description>Portable SIP registration and network diagnostic utility.</Description>
     <Company>InspireTel</Company>
-    <Version>1.3.1</Version>
+    <Version>1.3.2</Version>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
   </PropertyGroup>
   <ItemGroup>
