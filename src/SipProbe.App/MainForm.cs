@@ -343,11 +343,8 @@ public sealed class MainForm : Form
         {
             Dock = DockStyle.Fill,
             FixedPanel = FixedPanel.Panel1,
-            SplitterDistance = 440,
             SplitterWidth = 20,
             BackColor = Color.Transparent,
-            Panel1MinSize = 380,
-            Panel2MinSize = 420,
             Padding = new Padding(22, 16, 22, 14)
         };
         split.Panel1.Padding = new Padding(0, 0, 0, 0);
@@ -356,6 +353,26 @@ public sealed class MainForm : Form
         _rightCard.Controls.Add(BuildLogPanel());
         split.Panel1.Controls.Add(_leftCard);
         split.Panel2.Controls.Add(_rightCard);
+
+        // A new SplitContainer is only 150px wide, so applying the minimum
+        // panel sizes here would leave no valid splitter position and throw.
+        // Wait until layout has given it a real width.
+        void ApplyInitialSplit(object? sender, EventArgs e)
+        {
+            const int panel1Min = 380;
+            const int panel2Min = 420;
+            const int preferred = 440;
+            var available = split.Width - split.SplitterWidth;
+            if (available < panel1Min + panel2Min)
+                return;
+
+            split.SizeChanged -= ApplyInitialSplit;
+            split.SplitterDistance = Math.Clamp(preferred, panel1Min, available - panel2Min);
+            split.Panel1MinSize = panel1Min;
+            split.Panel2MinSize = panel2Min;
+        }
+
+        split.SizeChanged += ApplyInitialSplit;
         return split;
     }
 
