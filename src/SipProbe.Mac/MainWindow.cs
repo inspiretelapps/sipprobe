@@ -54,6 +54,7 @@ public sealed class MainWindow : Window
     private readonly Button _clear = new();
     private readonly Button _export = new();
     private readonly Button _unregister = new();
+    private readonly Button _capture = new();
     private readonly CheckBox _keepRegistered = new()
     {
         Content = "Keep Registered On The PBX",
@@ -124,6 +125,14 @@ public sealed class MainWindow : Window
     private string _regState = "idle";
     private DiagnosticProfile? _heldProfile;
     private IHeldSipRegistration? _heldSession;
+    private SipCaptureListener? _captureListener;
+    private bool _configBlocked;
+
+    private const int CapturePort = 5060;
+
+    private const string CaptureTip =
+        "Listens on port 5060 for SIP from the handset. Point the phone's SIP server (or outbound proxy) at this computer, " +
+        "then reboot it. Shows the handset's REGISTER verbatim, including the authentication name it really uses.";
 
     public MainWindow()
     {
@@ -153,6 +162,7 @@ public sealed class MainWindow : Window
         StyleAction(_checkPbx, "Check PBX Status", "Looks up this extension on the Yeastar: online or not, assigned phone, and blocked IPs. Needs Client ID and Secret under Advanced.", false);
         StyleAction(_stop, "Stop", "Cancels the test that is currently running.", false);
         StyleAction(_unregister, "Unregister Now", "Removes the diagnostic registration from the PBX so the extension is free again.", false);
+        StyleAction(_capture, "Listen For Handset", CaptureTip, false);
         _unregister.IsVisible = false;
         ToolTip.SetTip(_keepRegistered, "If ticked, a successful Test SIP Registration stays on the PBX until Unregister Now or the expiry timer. Use this to confirm the binding in Yeastar.");
         StyleGhost(_clear, "Clear");
@@ -182,6 +192,7 @@ public sealed class MainWindow : Window
         _checkPbx.Click += async (_, _) => await RunPbxCheckAsync();
         _unregister.Click += async (_, _) => await RunUnregisterAsync();
         _loadCfg.Click += async (_, _) => await LoadYealinkConfigAsync();
+        _capture.Click += async (_, _) => await ToggleCaptureAsync();
         _stop.Click += (_, _) => _activeRun?.Cancel();
         _clear.Click += (_, _) => ClearLog();
         _export.Click += async (_, _) => await ExportLogAsync();
@@ -204,6 +215,11 @@ public sealed class MainWindow : Window
             _heldSession = null;
             if (held is not null)
                 _ = held.DisposeAsync().AsTask();
+
+            var listener = _captureListener;
+            _captureListener = null;
+            if (listener is not null)
+                _ = listener.DisposeAsync().AsTask();
         };
         Opened += async (_, _) =>
         {
@@ -470,20 +486,22 @@ public sealed class MainWindow : Window
         var grid = new Grid
         {
             ColumnDefinitions = ColumnDefinitions.Parse("*,12,*"),
-            RowDefinitions = RowDefinitions.Parse("Auto,10,Auto,10,Auto,10,Auto"),
+            RowDefinitions = RowDefinitions.Parse("Auto,10,Auto,10,Auto,10,Auto,10,Auto"),
             Margin = new Thickness(0, 16, 0, 0)
         };
         Place(grid, _loadCfg, 0, 0);
         Place(grid, _runMatrix, 0, 2);
         Place(grid, _runRegister, 2, 0);
         Place(grid, _checkPbx, 2, 2);
+        Grid.SetColumnSpan(_capture, 3);
+        Place(grid, _capture, 4, 0);
         Grid.SetColumnSpan(_keepRegistered, 3);
-        Place(grid, _keepRegistered, 4, 0);
+        Place(grid, _keepRegistered, 6, 0);
         Grid.SetColumnSpan(_stop, 3);
-        Place(grid, _stop, 6, 0);
+        Place(grid, _stop, 8, 0);
         Grid.SetColumnSpan(_unregister, 3);
-        Place(grid, _unregister, 6, 0);
-        foreach (var button in new[] { _loadCfg, _runMatrix, _runRegister, _checkPbx, _stop, _unregister })
+        Place(grid, _unregister, 8, 0);
+        foreach (var button in new[] { _loadCfg, _runMatrix, _runRegister, _checkPbx, _stop, _unregister, _capture })
             button.HorizontalAlignment = HorizontalAlignment.Stretch;
         return grid;
     }
@@ -982,13 +1000,51 @@ public sealed class MainWindow : Window
             "The file remains local. Its password is held only in the password field and is never logged or exported.");
         foreach (var finding in ClockCertificateCheck.AnalyzeNtpServers(_ntpServers))
             AppendLocal(finding.Level, finding.Message);
-        foreach (var warning in settings.Warnings())
+        foreach (var warning in settings.Audit())
             AppendLocal(warning.Level, warning.Message);
+        _configBlocked = settings.HasBlockingProblem;
         _configLoaded = true;
         _configName = Path.GetFileName(path);
         _status.Text = $"Config Loaded — {_configName}";
         RefreshResultBanner();
         ApplyChrome();
+    }
+
+    private async Task ToggleCaptureAsync()
+    {
+        if (_captureListener is not null)
+        {
+            await StopCaptureAsync();
+            return;
+        }
+
+        var listener = new SipCaptureListener();
+        listener.EntryAdded += entry => Dispatcher.UIThread.Post(() => AppendEntry(entry));
+        try
+        {
+            AppendSeparator("LISTEN FOR HANDSET");
+            await listener.StartAsync(new SipCaptureOptions { Port = CapturePort });
+            _captureListener = listener;
+            _status.Text = $"Listening for the handset on port {CapturePort}";
+            StyleAction(_capture, "Stop Listening", CaptureTip, false, IsDark);
+        }
+        catch (Exception ex)
+        {
+            await listener.DisposeAsync();
+            await ShowAlert("Could not start listening", ex.Message);
+        }
+    }
+
+    private async Task StopCaptureAsync()
+    {
+        var listener = _captureListener;
+        _captureListener = null;
+        if (listener is null)
+            return;
+
+        await listener.DisposeAsync();
+        StyleAction(_capture, "Listen For Handset", CaptureTip, false, IsDark);
+        _status.Text = "Stopped listening";
     }
 
     private async Task RunUnregisterAsync()
@@ -1085,6 +1141,16 @@ public sealed class MainWindow : Window
             _resultTitle.Text = "Path Failed";
             _resultTitle.Foreground = new SolidColorBrush(Color.FromRgb(252, 165, 165));
             _resultDetail.Text = "No usable SIP response. Check DNS, firewall, port and transport.";
+            _resultDetail.Foreground = new SolidColorBrush(Color.FromRgb(254, 202, 202));
+        }
+        else if (_configBlocked)
+        {
+            _resultBanner.IsVisible = true;
+            _resultBanner.Background = new SolidColorBrush(Color.FromRgb(72, 24, 24));
+            _resultTitle.Text = "Handset Config Will Not Register";
+            _resultTitle.Foreground = new SolidColorBrush(Color.FromRgb(252, 165, 165));
+            _resultDetail.Text = "This phone configuration has a fault that blocks registration on every transport, " +
+                                 "even when this computer registers fine. Read the red lines in the trace.";
             _resultDetail.Foreground = new SolidColorBrush(Color.FromRgb(254, 202, 202));
         }
         else if (_configLoaded)
@@ -1276,6 +1342,7 @@ public sealed class MainWindow : Window
             StyleAction(_checkPbx, "Check PBX Status",
                 "Looks up this extension on the Yeastar: online or not, assigned phone, and blocked IPs. Needs Client ID and Secret under Advanced.", false, dark);
             StyleAction(_stop, "Stop", "Cancels the test that is currently running.", false, dark);
+            StyleAction(_capture, _captureListener is null ? "Listen For Handset" : "Stop Listening", CaptureTip, false, dark);
             StyleAction(_unregister, "Unregister Now",
                 "Removes the diagnostic registration from the PBX so the extension is free again.", false, dark);
             var cautionInk = new SolidColorBrush(Color.FromRgb(214, 118, 88));

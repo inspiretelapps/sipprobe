@@ -19,6 +19,8 @@ var tests = new List<(string Name, Func<Task> Run)>
     ("SIP ALG Via rewrite detection", TestAlgDetection),
     ("Clock versus certificate and private NTP", TestClockAndNtp),
     ("Yealink config NTP and ports", TestYealinkParser),
+    ("Yealink config blocking-problem audit", TestYealinkAudit),
+    ("SIP capture challenges and reveals auth name", TestSipCapture),
     ("Yeastar PBX API extension and blocked IP", TestYeastarPbxDiagnostic)
 };
 
@@ -424,6 +426,139 @@ static async Task TestYeastarPbxDiagnostic()
     Assert(diagnostic.Entries.Any(entry => entry.Message.Contains("no reported IP or firmware")), "phone status empty");
     Assert(diagnostic.Entries.Any(entry => entry.Message.Contains("blockedip/list")), "blocked IP endpoint");
     Assert(diagnostic.Entries.All(entry => !entry.Message.Contains("secret-value", StringComparison.Ordinal)), "API secret redaction");
+}
+
+static Task TestYealinkAudit()
+{
+    // The real-world case: outbound proxy switched on with no address.
+    var broken = YealinkConfigParser.Parse(new[]
+    {
+        "account.1.enable = 1",
+        "account.1.sip_server.1.address = pbx.example.com",
+        "account.1.user_name = 101",
+        "account.1.auth_name = 101abc",
+        "account.1.password = Secret123!",
+        "account.1.sip_server.1.transport_type = 2",
+        "account.1.sip_server.1.port = 5061",
+        "account.1.outbound_proxy_enable = 1",
+        "account.1.outbound_proxy.1.address = %NULL%"
+    });
+
+    Assert(broken.HasBlockingProblem, "empty outbound proxy is a blocking problem");
+    Assert(broken.Audit().Any(f => f.Level == DiagnosticLevel.Error && f.Message.Contains("Outbound proxy is enabled")),
+        "empty outbound proxy is an error");
+
+    // A disabled account can never register.
+    var disabled = YealinkConfigParser.Parse(new[]
+    {
+        "account.1.enable = 0",
+        "account.1.sip_server.1.address = pbx.example.com",
+        "account.1.user_name = 101",
+        "account.1.auth_name = 101abc",
+        "account.1.password = Secret123!"
+    });
+    Assert(disabled.Audit().Any(f => f.Level == DiagnosticLevel.Error && f.Message.Contains("disabled")), "disabled account");
+
+    // TLS on 5060 is a transport/port mismatch.
+    var mismatch = YealinkConfigParser.Parse(new[]
+    {
+        "account.1.enable = 1",
+        "account.1.sip_server.1.address = pbx.example.com",
+        "account.1.user_name = 101",
+        "account.1.auth_name = 101abc",
+        "account.1.password = Secret123!",
+        "account.1.sip_server.1.transport_type = 2",
+        "account.1.sip_server.1.port = 5060"
+    });
+    Assert(mismatch.Audit().Any(f => f.Level == DiagnosticLevel.Warning && f.Message.Contains("normally 5061")), "transport/port mismatch");
+    Assert(!mismatch.HasBlockingProblem, "a mismatch warns but does not block");
+
+    // Static DNS with no servers stops hostname resolution on every transport.
+    var noDns = YealinkConfigParser.Parse(new[]
+    {
+        "account.1.enable = 1",
+        "account.1.sip_server.1.address = pbx.example.com",
+        "account.1.user_name = 101",
+        "account.1.auth_name = 101abc",
+        "account.1.password = Secret123!",
+        "static.network.static_dns_enable = 1"
+    });
+    Assert(noDns.Audit().Any(f => f.Level == DiagnosticLevel.Error && f.Message.Contains("DNS")), "static DNS with no servers");
+
+    // A clean file should produce no errors at all.
+    var clean = YealinkConfigParser.Parse(new[]
+    {
+        "account.1.enable = 1",
+        "account.1.sip_server.1.address = pbx.example.com",
+        "account.1.user_name = 101",
+        "account.1.auth_name = 101abc",
+        "account.1.password = Secret123!",
+        "account.1.sip_server.1.transport_type = 2",
+        "account.1.sip_server.1.port = 5061",
+        "account.1.outbound_proxy_enable = 0"
+    });
+    Assert(!clean.HasBlockingProblem, "clean config has no blocking problem");
+    return Task.CompletedTask;
+}
+
+static async Task TestSipCapture()
+{
+    await using var listener = new SipCaptureListener();
+    var port = FreeUdpPort();
+    await listener.StartAsync(new SipCaptureOptions { Port = port, Realm = "probe-test" });
+
+    using var phone = new UdpClient(AddressFamily.InterNetwork);
+    var target = new IPEndPoint(IPAddress.Loopback, port);
+
+    // First REGISTER, no credentials: the listener should answer 401.
+    var register =
+        "REGISTER sip:pbx.example.com SIP/2.0\r\n" +
+        $"Via: SIP/2.0/UDP 10.0.0.9:5060;branch=z9hG4bK-{Guid.NewGuid():N}\r\n" +
+        "From: <sip:101@pbx.example.com>;tag=abc\r\n" +
+        "To: <sip:101@pbx.example.com>\r\n" +
+        "Call-ID: capture-test\r\n" +
+        "CSeq: 1 REGISTER\r\n" +
+        "Contact: <sip:101@10.0.0.9:5060>\r\n" +
+        "User-Agent: Yealink SIP-T40G 76.85.0.5\r\n" +
+        "Expires: 3600\r\n" +
+        "Content-Length: 0\r\n\r\n";
+    var payload = Encoding.UTF8.GetBytes(register);
+    await phone.SendAsync(payload, payload.Length, target);
+
+    var first = await ReceiveWithTimeout(phone);
+    Assert(first.StartsWith("SIP/2.0 401", StringComparison.Ordinal), "listener challenges an unauthenticated REGISTER");
+    Assert(first.Contains("realm=\"probe-test\""), "challenge carries the configured realm");
+    Assert(first.Contains("received=127.0.0.1"), "challenge echoes received");
+
+    // Second REGISTER carrying credentials: the listener should answer 200 OK.
+    var authenticated = register.Replace(
+        "CSeq: 1 REGISTER",
+        "CSeq: 2 REGISTER\r\nAuthorization: Digest username=\"101abc\", realm=\"probe-test\", " +
+        "nonce=\"deadbeef\", uri=\"sip:pbx.example.com\", response=\"secrethash\", algorithm=MD5");
+    payload = Encoding.UTF8.GetBytes(authenticated);
+    await phone.SendAsync(payload, payload.Length, target);
+
+    var second = await ReceiveWithTimeout(phone);
+    Assert(second.StartsWith("SIP/2.0 200", StringComparison.Ordinal), "listener accepts an authenticated REGISTER");
+
+    var entries = listener.Entries;
+    Assert(entries.Any(e => e.Message.Contains("authenticating as '101abc'")), "auth name is surfaced");
+    Assert(entries.Any(e => e.Message.Contains("Yealink SIP-T40G")), "user agent is surfaced");
+    Assert(entries.All(e => !e.Message.Contains("secrethash", StringComparison.Ordinal)), "digest response is never logged");
+    Assert(listener.MessageCount == 2, "both messages counted");
+}
+
+static async Task<string> ReceiveWithTimeout(UdpClient client)
+{
+    using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+    var result = await client.ReceiveAsync(cts.Token);
+    return Encoding.UTF8.GetString(result.Buffer);
+}
+
+static int FreeUdpPort()
+{
+    using var probe = new UdpClient(new IPEndPoint(IPAddress.Loopback, 0));
+    return ((IPEndPoint)probe.Client.LocalEndPoint!).Port;
 }
 
 static HttpResponseMessage Json(object payload) =>

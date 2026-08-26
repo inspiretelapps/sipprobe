@@ -60,6 +60,7 @@ public sealed class MainForm : Form
     private readonly Button _unregister = new();
     private readonly Button _clear = new();
     private readonly Button _export = new();
+    private readonly Button _capture = new();
     private readonly CheckBox _keepRegistered = new()
     {
         Text = "Keep Registered On The PBX",
@@ -162,6 +163,14 @@ public sealed class MainForm : Form
     private IHeldSipRegistration? _heldSession;
     private bool _passwordRevealed;
     private bool _apiSecretRevealed;
+    private SipCaptureListener? _captureListener;
+    private bool _configBlocked;
+
+    private const int CapturePort = 5060;
+
+    private const string CaptureTip =
+        "Listens on port 5060 for SIP from the handset. Point the phone's SIP server (or outbound proxy) at this computer, " +
+        "then reboot it. Shows the handset's REGISTER verbatim, including the authentication name it really uses.";
 
     public MainForm()
     {
@@ -184,6 +193,7 @@ public sealed class MainForm : Form
         StyleAction(_stop, "Stop", "Cancels the test that is currently running.", false);
         StyleAction(_unregister, "Unregister Now",
             "Removes the diagnostic registration from the PBX so the extension is free again.", false);
+        StyleAction(_capture, "Listen For Handset", CaptureTip, false);
         StyleGhost(_clear, "Clear");
         StyleGhost(_export, "Export");
         _unregister.Visible = false;
@@ -218,6 +228,7 @@ public sealed class MainForm : Form
         _checkPbx.Click += async (_, _) => await RunPbxCheckAsync();
         _unregister.Click += async (_, _) => await RunUnregisterAsync();
         _loadCfg.Click += (_, _) => LoadYealinkConfig();
+        _capture.Click += async (_, _) => await ToggleCaptureAsync();
         _stop.Click += (_, _) => _activeRun?.Cancel();
         _clear.Click += (_, _) => ClearLog();
         _export.Click += (_, _) => ExportLog();
@@ -234,7 +245,7 @@ public sealed class MainForm : Form
         RoundCorners(_rightCard, 18);
         RoundCorners(_advancedPanel, 12);
         RoundCorners(_resultBanner, 12);
-        foreach (var button in new[] { _loadCfg, _runMatrix, _runRegister, _checkPbx, _stop, _unregister })
+        foreach (var button in new[] { _loadCfg, _runMatrix, _runRegister, _checkPbx, _stop, _unregister, _capture })
             RoundCorners(button, 12);
         RoundCorners(_clear, 9);
         RoundCorners(_export, 9);
@@ -249,6 +260,11 @@ public sealed class MainForm : Form
             _heldSession = null;
             if (held is not null)
                 _ = held.DisposeAsync().AsTask();
+
+            var listener = _captureListener;
+            _captureListener = null;
+            if (listener is not null)
+                _ = listener.DisposeAsync().AsTask();
         };
     }
 
@@ -589,20 +605,19 @@ public sealed class MainForm : Form
             Dock = DockStyle.Top,
             AutoSize = true,
             ColumnCount = 2,
-            RowCount = 4,
+            RowCount = 5,
             Margin = new Padding(0, 8, 0, 0)
         };
         grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
         grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
-        grid.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        grid.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        grid.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        grid.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        for (var row = 0; row < 5; row++)
+            grid.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
         _loadCfg.Margin = new Padding(0, 0, 5, 8);
         _runRegister.Margin = new Padding(5, 0, 0, 8);
         _runMatrix.Margin = new Padding(0, 0, 5, 8);
         _checkPbx.Margin = new Padding(5, 0, 0, 8);
+        _capture.Margin = new Padding(0, 0, 0, 8);
         _keepRegistered.Margin = new Padding(0, 4, 0, 8);
         _stop.Margin = new Padding(0);
         _unregister.Margin = new Padding(0);
@@ -610,6 +625,7 @@ public sealed class MainForm : Form
         _runRegister.Dock = DockStyle.Fill;
         _runMatrix.Dock = DockStyle.Fill;
         _checkPbx.Dock = DockStyle.Fill;
+        _capture.Dock = DockStyle.Fill;
         _stop.Dock = DockStyle.Fill;
         _unregister.Dock = DockStyle.Fill;
 
@@ -617,14 +633,16 @@ public sealed class MainForm : Form
         grid.Controls.Add(_runRegister, 1, 0);
         grid.Controls.Add(_runMatrix, 0, 1);
         grid.Controls.Add(_checkPbx, 1, 1);
+        grid.SetColumnSpan(_capture, 2);
+        grid.Controls.Add(_capture, 0, 2);
         grid.SetColumnSpan(_keepRegistered, 2);
-        grid.Controls.Add(_keepRegistered, 0, 2);
+        grid.Controls.Add(_keepRegistered, 0, 3);
 
         var stopRow = new Panel { Height = 38, Dock = DockStyle.Fill, Margin = new Padding(0, 0, 0, 0) };
         stopRow.Controls.Add(_stop);
         stopRow.Controls.Add(_unregister);
         grid.SetColumnSpan(stopRow, 2);
-        grid.Controls.Add(stopRow, 0, 3);
+        grid.Controls.Add(stopRow, 0, 4);
         return grid;
     }
 
@@ -1134,13 +1152,60 @@ public sealed class MainForm : Form
             "The file remains local. Its password is held only in the password field and is never logged or exported.");
         foreach (var finding in ClockCertificateCheck.AnalyzeNtpServers(_ntpServers))
             AppendLocal(finding.Level, finding.Message);
-        foreach (var warning in settings.Warnings())
+        foreach (var warning in settings.Audit())
             AppendLocal(warning.Level, warning.Message);
+        _configBlocked = settings.HasBlockingProblem;
         _configLoaded = true;
         _configName = Path.GetFileName(path);
         _status.Text = $"Config Loaded — {_configName}";
         RefreshResultBanner();
         ApplyTheme();
+    }
+
+    private async Task ToggleCaptureAsync()
+    {
+        if (_captureListener is not null)
+        {
+            await StopCaptureAsync();
+            return;
+        }
+
+        var listener = new SipCaptureListener();
+        listener.EntryAdded += entry =>
+        {
+            if (IsDisposed)
+                return;
+            if (InvokeRequired)
+                BeginInvoke(() => AppendEntry(entry));
+            else
+                AppendEntry(entry);
+        };
+
+        try
+        {
+            AppendSeparator("LISTEN FOR HANDSET");
+            await listener.StartAsync(new SipCaptureOptions { Port = CapturePort });
+            _captureListener = listener;
+            _status.Text = $"Listening for the handset on port {CapturePort}";
+            _capture.Text = "Stop Listening";
+        }
+        catch (Exception ex)
+        {
+            await listener.DisposeAsync();
+            MessageBox.Show(this, ex.Message, "Could not start listening", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+    }
+
+    private async Task StopCaptureAsync()
+    {
+        var listener = _captureListener;
+        _captureListener = null;
+        if (listener is null)
+            return;
+
+        await listener.DisposeAsync();
+        _capture.Text = "Listen For Handset";
+        _status.Text = "Stopped listening";
     }
 
     private async Task RunUnregisterAsync()
@@ -1236,6 +1301,16 @@ public sealed class MainForm : Form
                 Color.FromArgb(254, 202, 202),
                 "Path Failed",
                 "No usable SIP response. Check DNS, firewall, port and transport.");
+        }
+        else if (_configBlocked)
+        {
+            ShowBanner(
+                Color.FromArgb(72, 24, 24),
+                Color.FromArgb(252, 165, 165),
+                Color.FromArgb(254, 202, 202),
+                "Handset Config Will Not Register",
+                "This phone configuration has a fault that blocks registration on every transport, " +
+                "even when this computer registers fine. Read the red lines in the trace.");
         }
         else if (_configLoaded)
         {
@@ -1416,6 +1491,7 @@ public sealed class MainForm : Form
             StyleAction(_checkPbx, "Check PBX Status",
                 "Looks up this extension on the Yeastar: online or not, assigned phone, and blocked IPs. Needs Client ID and Secret under Advanced.", false, dark);
             StyleAction(_stop, "Stop", "Cancels the test that is currently running.", false, dark);
+            StyleAction(_capture, _captureListener is null ? "Listen For Handset" : "Stop Listening", CaptureTip, false, dark);
             StyleAction(_unregister, "Unregister Now",
                 "Removes the diagnostic registration from the PBX so the extension is free again.", false, dark);
             _unregister.BackColor = dark ? Color.FromArgb(57, 45, 41) : Color.FromArgb(249, 238, 236);

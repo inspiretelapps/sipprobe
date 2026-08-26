@@ -23,6 +23,14 @@ public sealed class YeastarPbxDiagnostic
         "ip_defense/list"
     };
 
+    private static readonly string[] RegistrationLogEndpoints =
+    {
+        "log/search",
+        "security_log/search",
+        "operation_log/search",
+        "pbx_log/search"
+    };
+
     private readonly List<DiagnosticLogEntry> _entries = new();
     private readonly object _entryLock = new();
     private readonly HttpMessageHandler? _handler;
@@ -106,7 +114,154 @@ public sealed class YeastarPbxDiagnostic
 
             await TryLogPhonesAsync(client, token, request.ExtensionNumber.Trim(), timeout.Token);
             await TryLogBlockedIpsAsync(client, token, publicIp, timeout.Token);
+            await TryLogRegistrationAttemptsAsync(client, token, request.ExtensionNumber.Trim(), timeout.Token);
         }
+    }
+
+    /// <summary>
+    /// Polls the extension's online status so you can reboot the handset and see
+    /// whether its registration ever reaches the PBX.
+    /// </summary>
+    public async Task WatchRegistrationAsync(
+        YeastarPbxCheckRequest request,
+        TimeSpan duration,
+        CancellationToken cancellationToken = default)
+    {
+        using var http = _handler is null
+            ? new HttpClient { Timeout = TimeSpan.FromSeconds(20) }
+            : new HttpClient(_handler, disposeHandler: false);
+        using var client = new YeastarOpenApiClient(request.ApiBaseUrl, http);
+
+        var tokenResponse = await client.GetTokenAsync(request.ClientId.Trim(), request.ClientSecret, cancellationToken);
+        var token = tokenResponse.GetProperty("access_token").GetString()
+                    ?? throw new InvalidOperationException("get_token succeeded but returned no access_token.");
+
+        var number = request.ExtensionNumber.Trim();
+        Log(DiagnosticLevel.Info,
+            $"Watching extension {number} for {duration.TotalSeconds:0}s. Reboot or re-register the handset now.");
+
+        var deadline = DateTimeOffset.UtcNow + duration;
+        string? previous = null;
+        var sawChange = false;
+
+        while (DateTimeOffset.UtcNow < deadline && !cancellationToken.IsCancellationRequested)
+        {
+            string current;
+            try
+            {
+                var extension = await FindExtensionAsync(client, token, number, cancellationToken);
+                current = extension is null ? "not found" : DescribeSipStatus(extension.Value);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                current = $"lookup failed: {ex.Message}";
+            }
+
+            if (current != previous)
+            {
+                if (previous is not null)
+                {
+                    sawChange = true;
+                    Log(DiagnosticLevel.Success, $"Registration state changed: {previous} -> {current}.");
+                }
+                else
+                {
+                    Log(DiagnosticLevel.Info, $"Starting state: {current}.");
+                }
+
+                previous = current;
+            }
+
+            try
+            {
+                await Task.Delay(TimeSpan.FromSeconds(3), cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
+        }
+
+        if (sawChange)
+            return;
+
+        Log(DiagnosticLevel.Warning,
+            "The extension's registration state never changed while watching. If the handset was rebooted in that window, " +
+            "its REGISTER is not reaching the PBX at all - look at the handset's network path, not the credentials.");
+    }
+
+    private static string DescribeSipStatus(JsonElement extension)
+    {
+        if (!extension.TryGetProperty("online_status", out var online) ||
+            !online.TryGetProperty("sip_phone", out var sip))
+            return "unknown";
+
+        var ips = new List<string>();
+        if (sip.TryGetProperty("status_list", out var list) && list.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in list.EnumerateArray())
+            {
+                if (ReadInt(item, "status") == 1)
+                    ips.Add(ReadString(item, "ip") ?? "online");
+            }
+        }
+
+        if (ips.Count > 0)
+            return "registered from " + string.Join(", ", ips);
+        return ReadInt(sip, "status") == 1 ? "online" : "not registered";
+    }
+
+    private async Task TryLogRegistrationAttemptsAsync(
+        YeastarOpenApiClient client,
+        string token,
+        string extension,
+        CancellationToken cancellationToken)
+    {
+        foreach (var endpoint in RegistrationLogEndpoints)
+        {
+            try
+            {
+                var result = await client.GetAsync(
+                    endpoint,
+                    token,
+                    new Dictionary<string, string>
+                    {
+                        ["search_value"] = extension,
+                        ["page"] = "1",
+                        ["page_size"] = "50"
+                    },
+                    cancellationToken);
+
+                var rows = ExtractArray(result);
+                if (rows.Count == 0)
+                {
+                    Log(DiagnosticLevel.Detail, $"{endpoint} returned no rows for extension {extension}.");
+                    return;
+                }
+
+                Log(DiagnosticLevel.Success, $"Recent PBX log entries for {extension} via {endpoint} ({rows.Count}):");
+                foreach (var row in rows.Take(10))
+                {
+                    var when = ReadString(row, "time", "timestamp", "created_time", "date") ?? "";
+                    var text = ReadString(row, "content", "description", "message", "detail", "operation") ?? row.ToString();
+                    Log(DiagnosticLevel.Detail, $"  {when} {text}".TrimEnd());
+                }
+
+                return;
+            }
+            catch (YeastarApiException ex) when (ex.IsMissingInterface)
+            {
+                Log(DiagnosticLevel.Detail, $"{endpoint} is not exposed by this PBX OpenAPI.");
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                Log(DiagnosticLevel.Detail, $"{endpoint} failed: {ex.Message}");
+            }
+        }
+
+        Log(DiagnosticLevel.Info,
+            "This PBX OpenAPI does not expose registration logs. In the web UI open Reports and Recordings -> Logs, " +
+            "filter on the extension, and check whether any REGISTER from the handset arrives at all.");
     }
 
     private async Task TryLogSystemAsync(YeastarOpenApiClient client, string token, CancellationToken cancellationToken)
