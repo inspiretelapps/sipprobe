@@ -73,17 +73,17 @@ public sealed class MainForm : Form
         Cursor = Cursors.Hand
     };
 
-    private readonly Panel _header = new() { Dock = DockStyle.Fill, Padding = new Padding(22, 0, 18, 0) };
-    private readonly Panel _leftCard = new() { Dock = DockStyle.Fill, Padding = new Padding(16, 14, 16, 10) };
+    private readonly Panel _header = new() { Dock = DockStyle.Fill, Padding = new Padding(24, 0, 22, 0) };
+    private readonly Panel _leftCard = new() { Dock = DockStyle.Fill, Padding = new Padding(20, 18, 20, 12) };
     private readonly Panel _rightCard = new() { Dock = DockStyle.Fill };
-    private readonly Panel _statusBar = new() { Dock = DockStyle.Fill, Padding = new Padding(22, 0, 16, 0) };
+    private readonly Panel _statusBar = new() { Dock = DockStyle.Fill, Padding = new Padding(24, 0, 22, 0) };
     private readonly Panel _actionDock = new()
     {
-        Padding = new Padding(0, 10, 0, 0),
+        Padding = new Padding(0, 12, 0, 0),
         AutoSize = true,
         AutoSizeMode = AutoSizeMode.GrowAndShrink
     };
-    private readonly Panel _advancedPanel = new() { Padding = new Padding(12, 10, 12, 12), Margin = new Padding(0, 8, 0, 4) };
+    private readonly Panel _advancedPanel = new() { Padding = new Padding(14, 12, 14, 14), Margin = new Padding(0, 10, 0, 4) };
     private readonly Panel _advancedToggle = new() { Height = 28, Cursor = Cursors.Hand };
     private readonly Panel _advancedBody = new() { Visible = false, AutoSize = true };
     private readonly Label _advancedHint = new()
@@ -108,14 +108,20 @@ public sealed class MainForm : Form
         Font = new Font("Segoe UI", 9.5f),
         ForeColor = Color.FromArgb(186, 230, 210)
     };
-    private readonly Label _chipConfig = ChipLabel("Config");
-    private readonly Label _chipPath = ChipLabel("Path");
-    private readonly Label _chipReg = ChipLabel("SIP Registration");
+    private readonly Panel _chipConfig = DotPanel();
+    private readonly Panel _chipPath = DotPanel();
+    private readonly Panel _chipReg = DotPanel();
+    private readonly Label _chipConfigText = RailLabel("Config");
+    private readonly Label _chipPathText = RailLabel("Path");
+    private readonly Label _chipRegText = RailLabel("SIP Registration");
+    private readonly Panel _railLine1 = new() { Height = 2, Margin = new Padding(8, 9, 8, 0) };
+    private readonly Panel _railLine2 = new() { Height = 2, Margin = new Padding(8, 9, 8, 0) };
+    private readonly Panel _beacon = new() { Size = new Size(9, 9), Margin = new Padding(10, 10, 0, 0) };
     private readonly Label _title = new()
     {
         Text = "SIP Probe",
         AutoSize = true,
-        Font = new Font("Segoe UI Semibold", 18f),
+        Font = new Font("Segoe UI Semibold", 22f),
         ForeColor = Color.FromArgb(12, 32, 34)
     };
     private readonly Label _subtitle = new()
@@ -166,6 +172,7 @@ public sealed class MainForm : Form
         Font = new Font("Segoe UI", 9.5f);
         AutoScaleMode = AutoScaleMode.Dpi;
 
+        _mutedLabels.AddRange(new[] { _chipConfigText, _chipPathText, _chipRegText });
         StyleAction(_loadCfg, "Load Phone Config",
             "Reads a Yealink .cfg and fills the fields. The password stays in memory and is never logged.", false);
         StyleAction(_runMatrix, "Test Path",
@@ -222,6 +229,12 @@ public sealed class MainForm : Form
                 ApplyTheme();
         };
 
+        RoundCorners(_beacon, 5);
+        RoundCorners(_leftCard, 18);
+        RoundCorners(_rightCard, 18);
+        RoundCorners(_advancedPanel, 12);
+        RoundCorners(_resultBanner, 12);
+
         Controls.Add(BuildRoot());
         ApplyTheme();
         RefreshResultBanner();
@@ -245,9 +258,9 @@ public sealed class MainForm : Form
             Padding = new Padding(0),
             Margin = new Padding(0)
         };
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 64));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 76));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
         root.Controls.Add(BuildHeader(), 0, 0);
         root.Controls.Add(BuildBody(), 0, 1);
         root.Controls.Add(BuildStatusBar(), 0, 2);
@@ -268,11 +281,20 @@ public sealed class MainForm : Form
 
         var mark = new Panel
         {
-            Width = 8,
-            Height = 28,
+            Width = 6,
+            Height = 30,
             BackColor = Accent,
-            Margin = new Padding(0, 16, 12, 0)
+            Margin = new Padding(0, 16, 14, 0)
         };
+        RoundCorners(mark, 3);
+        var titleRow = new FlowLayoutPanel
+        {
+            AutoSize = true,
+            WrapContents = false,
+            Margin = new Padding(0)
+        };
+        titleRow.Controls.Add(_title);
+        titleRow.Controls.Add(_beacon);
         var titles = new FlowLayoutPanel
         {
             AutoSize = true,
@@ -280,7 +302,7 @@ public sealed class MainForm : Form
             WrapContents = false,
             Margin = new Padding(0, 8, 0, 0)
         };
-        titles.Controls.Add(_title);
+        titles.Controls.Add(titleRow);
         _subtitle.Margin = new Padding(0, 0, 0, 0);
         titles.Controls.Add(_subtitle);
         var brand = new FlowLayoutPanel
@@ -317,12 +339,12 @@ public sealed class MainForm : Form
         {
             Dock = DockStyle.Fill,
             FixedPanel = FixedPanel.Panel1,
-            SplitterDistance = 430,
-            SplitterWidth = 14,
+            SplitterDistance = 440,
+            SplitterWidth = 20,
             BackColor = Color.Transparent,
             Panel1MinSize = 380,
             Panel2MinSize = 420,
-            Padding = new Padding(16, 10, 16, 8)
+            Padding = new Padding(22, 16, 22, 14)
         };
         split.Panel1.Padding = new Padding(0, 0, 0, 0);
         split.Panel2.Padding = new Padding(0);
@@ -395,33 +417,46 @@ public sealed class MainForm : Form
 
     private Control BuildAdvancedSection()
     {
-        var header = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 2, Height = 24 };
+        var header = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 3, Height = 24 };
+        header.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         header.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        var glyph = new Label
+        {
+            Text = "▸",
+            AutoSize = true,
+            Font = new Font("Segoe UI", 8f),
+            Margin = new Padding(2, 3, 6, 0)
+        };
         var title = new Label
         {
-            Text = "Advanced",
+            Text = "ADVANCED",
             AutoSize = true,
             Font = new Font("Segoe UI Semibold", 9.5f),
-            Margin = new Padding(2, 2, 0, 0)
+            Margin = new Padding(0, 2, 0, 0)
         };
+        _mutedLabels.Add(glyph);
         _mutedLabels.Add(title);
         _mutedLabels.Add(_advancedHint);
-        header.Controls.Add(title, 0, 0);
-        header.Controls.Add(_advancedHint, 1, 0);
+        header.Controls.Add(glyph, 0, 0);
+        header.Controls.Add(title, 1, 0);
+        header.Controls.Add(_advancedHint, 2, 0);
 
         header.Dock = DockStyle.Fill;
         _advancedToggle.Controls.Add(header);
         void ToggleAdvanced(object? sender, EventArgs e)
         {
             _advancedBody.Visible = !_advancedBody.Visible;
+            glyph.Text = _advancedBody.Visible ? "▾" : "▸";
             _advancedHint.Text = _advancedBody.Visible ? "Hide" : "Show extra ports, TLS and PBX API";
         }
         _advancedToggle.Click += ToggleAdvanced;
         header.Click += ToggleAdvanced;
         title.Click += ToggleAdvanced;
+        glyph.Click += ToggleAdvanced;
         _advancedHint.Click += ToggleAdvanced;
         title.Cursor = Cursors.Hand;
+        glyph.Cursor = Cursors.Hand;
         _advancedHint.Cursor = Cursors.Hand;
 
         _advancedBody.Dock = DockStyle.Top;
@@ -584,15 +619,7 @@ public sealed class MainForm : Form
         panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
         panel.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
-        var chips = new FlowLayoutPanel
-        {
-            AutoSize = true,
-            WrapContents = false,
-            Padding = new Padding(12, 12, 12, 0)
-        };
-        chips.Controls.Add(WrapChip(_chipConfig));
-        chips.Controls.Add(WrapChip(_chipPath));
-        chips.Controls.Add(WrapChip(_chipReg));
+        var chips = BuildSignalRail();
 
         _resultBanner.AutoSize = true;
         _resultBanner.Dock = DockStyle.Top;
@@ -650,6 +677,35 @@ public sealed class MainForm : Form
         panel.Controls.Add(toolbar, 0, 1);
         panel.Controls.Add(_log, 0, 2);
         return panel;
+    }
+
+    private Control BuildSignalRail()
+    {
+        var row = new TableLayoutPanel
+        {
+            AutoSize = true,
+            ColumnCount = 5,
+            RowCount = 1,
+            Margin = new Padding(14, 14, 14, 0)
+        };
+        row.Controls.Add(RailNode(_chipConfig, _chipConfigText), 0, 0);
+        row.Controls.Add(_railLine1, 1, 0);
+        row.Controls.Add(RailNode(_chipPath, _chipPathText), 2, 0);
+        row.Controls.Add(_railLine2, 3, 0);
+        row.Controls.Add(RailNode(_chipReg, _chipRegText), 4, 0);
+        _railLine1.Width = 36;
+        _railLine2.Width = 36;
+        return row;
+    }
+
+    private static Control RailNode(Panel dot, Label label)
+    {
+        var node = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(0) };
+        dot.Margin = new Padding(0, 6, 7, 0);
+        label.Margin = new Padding(0);
+        node.Controls.Add(dot);
+        node.Controls.Add(label);
+        return node;
     }
 
     private Control BuildStatusBar()
@@ -912,6 +968,7 @@ public sealed class MainForm : Form
         _transport.Enabled = !running;
         _status.Text = status;
         UseWaitCursor = running;
+        UpdateBeacon(running);
     }
 
     private void AppendWelcome()
@@ -1097,16 +1154,16 @@ public sealed class MainForm : Form
 
     private void RefreshResultBanner()
     {
-        PaintChip(_chipConfig, _configLoaded ? "ok" : "idle",
+        PaintChip(_chipConfig, _chipConfigText, _configLoaded ? "ok" : "idle",
             _configLoaded ? "✓  Config Loaded" : "Config");
-        PaintChip(_chipPath, _pathState, _pathState switch
+        PaintChip(_chipPath, _chipPathText, _pathState, _pathState switch
         {
             "ok" => "✓  Path Reachable",
             "partial" => "Path Partial",
             "fail" => "Path Failed",
             _ => "Path"
         });
-        PaintChip(_chipReg, _regState, _regState switch
+        PaintChip(_chipReg, _chipRegText, _regState, _regState switch
         {
             "ok" => "✓  Registered",
             "held" => "✓  Registered",
@@ -1177,6 +1234,40 @@ public sealed class MainForm : Form
 
         _unregister.Visible = _heldProfile is not null && _activeRun is null;
         _stop.Visible = _activeRun is not null || _heldProfile is null;
+        UpdateBeacon();
+    }
+
+    private void UpdateBeacon(bool? runningOverride = null)
+    {
+        Color color;
+        string tip;
+        if (runningOverride ?? _activeRun is not null)
+        {
+            color = Color.FromArgb(251, 191, 36);
+            tip = "Test running";
+        }
+        else if (_regState is "ok" or "held")
+        {
+            color = Color.FromArgb(52, 211, 153);
+            tip = "Last result: registered";
+        }
+        else if (_regState == "fail" || _pathState == "fail")
+        {
+            color = Color.FromArgb(248, 113, 113);
+            tip = "Last result: failed";
+        }
+        else if (_pathState is "ok" or "partial" || _configLoaded)
+        {
+            color = Color.FromArgb(56, 178, 172);
+            tip = "Ready for the next step";
+        }
+        else
+        {
+            color = Color.FromArgb(120, 138, 136);
+            tip = "Idle";
+        }
+        _beacon.BackColor = color;
+        _tips.SetToolTip(_beacon, tip);
     }
 
     private void ShowBanner(Color background, Color title, Color detail, string heading, string body)
@@ -1225,29 +1316,18 @@ public sealed class MainForm : Form
             Handle();
     }
 
-    private static void PaintChip(Label chip, string state, string text)
+    private static void PaintChip(Panel dot, Label label, string state, string text)
     {
-        chip.Text = text;
-        switch (state)
+        label.Text = text;
+        label.Font = new Font("Segoe UI Semibold", state is "ok" or "held" or "fail" or "partial" ? 9f : 9f,
+            state is "ok" or "held" or "fail" or "partial" ? FontStyle.Bold : FontStyle.Regular);
+        dot.BackColor = state switch
         {
-            case "ok":
-            case "held":
-                chip.BackColor = Color.FromArgb(14, 64, 52);
-                chip.ForeColor = Color.FromArgb(110, 232, 180);
-                break;
-            case "partial":
-                chip.BackColor = Color.FromArgb(64, 48, 14);
-                chip.ForeColor = Color.FromArgb(252, 211, 77);
-                break;
-            case "fail":
-                chip.BackColor = Color.FromArgb(72, 24, 24);
-                chip.ForeColor = Color.FromArgb(252, 165, 165);
-                break;
-            default:
-                chip.BackColor = Color.FromArgb(28, 40, 42);
-                chip.ForeColor = Color.FromArgb(148, 163, 168);
-                break;
-        }
+            "ok" or "held" => Color.FromArgb(52, 211, 153),
+            "partial" => Color.FromArgb(251, 191, 36),
+            "fail" => Color.FromArgb(248, 113, 113),
+            _ => Color.FromArgb(120, 138, 136)
+        };
     }
 
     private void ApplyTheme()
@@ -1257,21 +1337,21 @@ public sealed class MainForm : Form
         try
         {
             _darkMode.Checked = dark;
-            var formBg = dark ? Color.FromArgb(14, 18, 19) : Color.FromArgb(232, 238, 236);
-            var card = dark ? Color.FromArgb(24, 31, 32) : Color.White;
+            var formBg = dark ? Color.FromArgb(9, 13, 14) : Color.FromArgb(226, 233, 231);
+            var card = dark ? Color.FromArgb(26, 34, 36) : Color.White;
             var muted = dark ? Color.FromArgb(140, 160, 158) : Color.FromArgb(100, 118, 116);
             var text = dark ? Color.FromArgb(236, 245, 243) : Color.FromArgb(12, 32, 34);
-            var inputBg = dark ? Color.FromArgb(18, 24, 25) : Color.White;
-            var inputFg = dark ? Color.FromArgb(236, 245, 243) : Color.FromArgb(15, 23, 42);
+            var inputBg = dark ? Color.FromArgb(36, 47, 49) : Color.FromArgb(246, 249, 248);
+            var inputFg = dark ? Color.FromArgb(232, 241, 239) : Color.FromArgb(20, 36, 38);
 
             BackColor = formBg;
             _header.BackColor = formBg;
             _leftCard.BackColor = card;
             _actionDock.BackColor = card;
-            var advancedBg = dark ? Color.FromArgb(18, 24, 25) : Color.FromArgb(243, 247, 246);
+            var advancedBg = dark ? Color.FromArgb(19, 25, 27) : Color.FromArgb(242, 246, 245);
             _advancedPanel.BackColor = advancedBg;
             _advancedToggle.BackColor = advancedBg;
-            _rightCard.BackColor = Color.FromArgb(10, 18, 20);
+            _rightCard.BackColor = card;
             _statusBar.BackColor = formBg;
             _title.ForeColor = text;
             _subtitle.ForeColor = muted;
@@ -1284,6 +1364,8 @@ public sealed class MainForm : Form
             _forceTls12.BackColor = _advancedPanel.BackColor;
             _ignoreCertificateErrors.BackColor = advancedBg;
 
+            _railLine1.BackColor = dark ? Color.FromArgb(42, 54, 55) : Color.FromArgb(214, 224, 221);
+            _railLine2.BackColor = _railLine1.BackColor;
             foreach (var label in _mutedLabels)
                 label.ForeColor = muted;
             foreach (var icon in _infoIcons)
@@ -1315,6 +1397,8 @@ public sealed class MainForm : Form
             StyleAction(_stop, "Stop", "Cancels the test that is currently running.", false, dark);
             StyleAction(_unregister, "Unregister Now",
                 "Removes the diagnostic registration from the PBX so the extension is free again.", false, dark);
+            _unregister.BackColor = dark ? Color.FromArgb(57, 45, 41) : Color.FromArgb(249, 238, 236);
+            _unregister.ForeColor = Color.FromArgb(214, 118, 88);
             StyleGhost(_clear, "Clear", dark);
             StyleGhost(_export, "Export", dark);
         }
@@ -1404,12 +1488,12 @@ public sealed class MainForm : Form
     {
         var label = new Label
         {
-            Text = text,
+            Text = text.ToUpperInvariant(),
             AutoSize = true,
-            Font = new Font("Segoe UI Semibold", 12f),
-            Margin = new Padding(0, 4, 0, 2)
+            Font = new Font("Segoe UI Semibold", 9.5f),
+            Margin = new Padding(0, 6, 0, 2),
+            ForeColor = Accent
         };
-        _mutedLabels.Add(label);
         return label;
     }
 
@@ -1481,50 +1565,75 @@ public sealed class MainForm : Form
         return grid;
     }
 
-    private static Panel WrapChip(Label chip)
+    private static Panel DotPanel()
     {
-        var wrap = new Panel
-        {
-            AutoSize = true,
-            Padding = new Padding(0),
-            Margin = new Padding(0, 0, 8, 0)
-        };
-        wrap.Controls.Add(chip);
-        return wrap;
+        var dot = new Panel { Size = new Size(9, 9), Margin = new Padding(0) };
+        RoundCorners(dot, 5);
+        return dot;
     }
 
-    private static Label ChipLabel(string text) => new()
+    private static Label RailLabel(string text) => new()
     {
         Text = text,
         AutoSize = true,
-        Padding = new Padding(8, 5, 8, 5),
         Margin = new Padding(0),
-        Font = new Font("Segoe UI Semibold", 8.5f),
-        BackColor = Color.FromArgb(28, 40, 42),
-        ForeColor = Color.FromArgb(148, 163, 168)
+        Font = new Font("Segoe UI Semibold", 9f)
     };
+
+    private static void RoundCorners(Control control, int radius)
+    {
+        void Apply()
+        {
+            if (control.Width <= 1 || control.Height <= 1)
+                return;
+            using var path = RoundedRectPath(new Rectangle(0, 0, control.Width, control.Height), radius);
+            control.Region = new Region(path);
+        }
+        control.Resize += (_, _) => Apply();
+        Apply();
+    }
+
+    private static GraphicsPath RoundedRectPath(Rectangle bounds, int radius)
+    {
+        var path = new GraphicsPath();
+        var diameter = Math.Min(radius * 2, Math.Min(bounds.Width, bounds.Height));
+        if (diameter <= 0)
+        {
+            path.AddRectangle(bounds);
+            return path;
+        }
+        var arc = new Rectangle(bounds.Location, new Size(diameter, diameter));
+        path.AddArc(arc, 180, 90);
+        arc.X = bounds.Right - diameter;
+        path.AddArc(arc, 270, 90);
+        arc.Y = bounds.Bottom - diameter;
+        path.AddArc(arc, 0, 90);
+        arc.X = bounds.Left;
+        path.AddArc(arc, 90, 90);
+        path.CloseFigure();
+        return path;
+    }
 
     private void StyleAction(Button button, string title, string tip, bool primary, bool dark = false)
     {
         button.Text = title;
-        button.Height = primary ? 44 : 38;
+        button.Height = primary ? 46 : 40;
         button.FlatStyle = FlatStyle.Flat;
         button.Cursor = Cursors.Hand;
         button.Font = new Font("Segoe UI Semibold", 9.5f);
         button.Padding = new Padding(8, 0, 8, 0);
+        button.FlatAppearance.BorderSize = 0;
         if (primary)
         {
             button.BackColor = Accent;
             button.ForeColor = Color.White;
-            button.FlatAppearance.BorderSize = 0;
         }
         else
         {
-            button.BackColor = dark ? Color.FromArgb(32, 42, 43) : Color.FromArgb(243, 247, 246);
-            button.ForeColor = dark ? Color.FromArgb(210, 230, 226) : Color.FromArgb(24, 42, 44);
-            button.FlatAppearance.BorderColor = dark ? Color.FromArgb(58, 74, 74) : Color.FromArgb(203, 213, 210);
-            button.FlatAppearance.BorderSize = 1;
+            button.BackColor = dark ? Color.FromArgb(40, 52, 54) : Color.FromArgb(236, 242, 241);
+            button.ForeColor = dark ? Color.FromArgb(232, 241, 239) : Color.FromArgb(24, 42, 44);
         }
+        RoundCorners(button, 12);
         _tips.SetToolTip(button, tip);
     }
 
@@ -1533,12 +1642,13 @@ public sealed class MainForm : Form
         button.Text = title;
         button.FlatStyle = FlatStyle.Flat;
         button.Cursor = Cursors.Hand;
-        button.Height = 30;
+        button.Height = 32;
         button.AutoSize = true;
         button.BackColor = Color.FromArgb(16, 28, 30);
         button.ForeColor = dark ? Color.FromArgb(186, 210, 206) : Color.FromArgb(210, 230, 226);
         button.FlatAppearance.BorderSize = 0;
         button.Font = new Font("Segoe UI Semibold", 9f);
+        RoundCorners(button, 9);
     }
 
     private static NumericUpDown NumberField(decimal min, decimal max, decimal value) => new()
