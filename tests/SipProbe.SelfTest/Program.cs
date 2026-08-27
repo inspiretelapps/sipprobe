@@ -22,7 +22,13 @@ var tests = new List<(string Name, Func<Task> Run)>
     ("Yealink config blocking-problem audit", TestYealinkAudit),
     ("SIP capture challenges and reveals auth name", TestSipCapture),
     ("SIP capture answers keepalives and collapses retransmissions", TestSipCaptureAnswersKeepalives),
-    ("Yeastar PBX API extension and blocked IP", TestYeastarPbxDiagnostic)
+    ("Yeastar PBX API extension and blocked IP", TestYeastarPbxDiagnostic),
+    ("Diagnosis: UDP silent TLS 401 is the router", TestDiagnosisRouterUdpBlocked),
+    ("Diagnosis: Via rewrite is SIP ALG", TestDiagnosisSipAlg),
+    ("Diagnosis: all transports fail is not ALG", TestDiagnosisPathBlocked),
+    ("Diagnosis: TLS handshake with TCP/UDP working", TestDiagnosisTlsHandshake),
+    ("Diagnosis: registered on TLS still warns about UDP", TestDiagnosisRegisteredOnTls),
+    ("Diagnosis: empty outbound proxy stays first", TestDiagnosisPhoneConfigFirst)
 };
 
 var failed = 0;
@@ -107,6 +113,8 @@ static async Task TestRegisterExchange(SipTransport transport)
     await server.Completion;
     Assert(result.Registered, $"{transport} engine registration result: {result.Summary}");
     Assert(result.FinalStatusCode == 200, $"{transport} final status");
+    Assert(result.Stage == FailureStage.Success, $"{transport} success stage");
+    Assert(result.Transport == transport, $"{transport} recorded on result");
     Assert(result.Entries.All(entry => !entry.Message.Contains("Secret123!")), "password redaction");
 }
 
@@ -357,6 +365,8 @@ static Task TestYealinkParser()
         "local_time.ntp_server2 = pool.ntp.org",
         "account.1.outbound_proxy_enable = 1",
         "account.1.outbound_proxy.1.address = ",
+        "account.1.nat.udp_update_enable = 1",
+        "account.1.nat.udp_update_time = 30",
         "account.1.sip_server.2.address = %NULL%"
     });
     Assert(settings.Server == "pbx.example.com", "server");
@@ -366,6 +376,8 @@ static Task TestYealinkParser()
     Assert(settings.NtpServers.Contains("pool.ntp.org"), "secondary NTP");
     Assert(settings.OutboundProxyEnabled == true, "outbound proxy enabled");
     Assert(string.IsNullOrWhiteSpace(settings.OutboundProxyAddress), "empty outbound proxy");
+    Assert(settings.KeepAliveEnabled, "keep-alive enabled");
+    Assert(settings.KeepAliveSeconds == 30, "keep-alive interval");
     Assert(settings.Warnings().Any(warning => warning.Message.Contains("empty", StringComparison.OrdinalIgnoreCase)), "empty proxy warning");
     return Task.CompletedTask;
 }
@@ -603,6 +615,161 @@ static HttpResponseMessage Json(object payload) =>
     new(HttpStatusCode.OK)
     {
         Content = new StringContent(System.Text.Json.JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json")
+    };
+
+static Task TestDiagnosisRouterUdpBlocked()
+{
+    var diagnosis = DiagnosisEngine.From(
+        new[]
+        {
+            Outcome(SipTransport.Udp, 5060, FailureStage.NoSipResponse),
+            Outcome(SipTransport.Tcp, 5060, FailureStage.Success, status: 401),
+            Outcome(SipTransport.Tls, 5061, FailureStage.Success, status: 401)
+        },
+        Phone(SipTransport.Udp, stun: true, keepalive: true, privateNtp: true));
+
+    Assert(diagnosis.Cause == DiagnosisCause.RouterUdpBlocked, "UDP silent + TLS 401 is the router");
+    Assert(diagnosis.Headline.Contains("router", StringComparison.OrdinalIgnoreCase), "headline names the router");
+    Assert(diagnosis.SuggestedTransport == SipTransport.Tls, "suggest TLS");
+    Assert(diagnosis.SuggestedPort == 5061, "suggest 5061");
+    Assert(diagnosis.DoNow.Any(step => step.Detail.Contains("transport_type = 2")), "Yealink TLS keys");
+    Assert(diagnosis.DoNow.Any(step => step.Title.Contains("keep-alive", StringComparison.OrdinalIgnoreCase)),
+        "keep-alive will not beat ALG");
+    Assert(diagnosis.IfYouHaveRouterAccess.Count > 0, "optional router steps");
+    Assert(diagnosis.DoNot.Any(step => step.Title.Contains("STUN", StringComparison.OrdinalIgnoreCase)), "do not use STUN");
+    Assert(diagnosis.FormatAdviceBody().Contains("no router access", StringComparison.OrdinalIgnoreCase), "advice body");
+    return Task.CompletedTask;
+}
+
+static Task TestDiagnosisSipAlg()
+{
+    var diagnosis = DiagnosisEngine.From(
+        new[]
+        {
+            Outcome(SipTransport.Udp, 5060, FailureStage.Success, status: 401, alg: AlgVerdict.AlgRewrite),
+            Outcome(SipTransport.Tcp, 5060, FailureStage.Success, status: 401),
+            Outcome(SipTransport.Tls, 5061, FailureStage.Success, status: 401)
+        },
+        Phone(SipTransport.Udp));
+
+    Assert(diagnosis.Cause == DiagnosisCause.RouterSipAlg, "Via rewrite is ALG");
+    Assert(diagnosis.Headline.Contains("ALG", StringComparison.OrdinalIgnoreCase), "headline says ALG");
+    Assert(diagnosis.SuggestedTransport == SipTransport.Tls, "ALG bypass is TLS");
+    Assert(diagnosis.DoNot.Any(step => step.Title.Contains("STUN", StringComparison.OrdinalIgnoreCase)), "STUN is not the ALG fix");
+    return Task.CompletedTask;
+}
+
+static Task TestDiagnosisPathBlocked()
+{
+    var diagnosis = DiagnosisEngine.From(
+        new[]
+        {
+            Outcome(SipTransport.Udp, 5060, FailureStage.Connect),
+            Outcome(SipTransport.Tcp, 5060, FailureStage.Connect),
+            Outcome(SipTransport.Tls, 5061, FailureStage.Connect)
+        });
+
+    Assert(diagnosis.Cause == DiagnosisCause.PathBlocked, "all connect failures are not ALG");
+    Assert(!diagnosis.Headline.Contains("ALG", StringComparison.OrdinalIgnoreCase), "do not call it ALG");
+    Assert(diagnosis.DoNow.Any(step => step.Title.Contains("hotspot", StringComparison.OrdinalIgnoreCase)), "hotspot isolation");
+    return Task.CompletedTask;
+}
+
+static Task TestDiagnosisTlsHandshake()
+{
+    var diagnosis = DiagnosisEngine.From(
+        new[]
+        {
+            Outcome(SipTransport.Udp, 5060, FailureStage.Success, status: 401),
+            Outcome(SipTransport.Tcp, 5060, FailureStage.Success, status: 401),
+            Outcome(SipTransport.Tls, 5061, FailureStage.TlsHandshake)
+        },
+        Phone(SipTransport.Tls, privateNtp: true));
+
+    Assert(diagnosis.Cause == DiagnosisCause.TlsHandshake, "TLS handshake isolated");
+    Assert(diagnosis.DoNow.Any(step => step.Detail.Contains("pool.ntp.org")), "public NTP");
+    Assert(diagnosis.SuggestedTransport == SipTransport.Tcp, "TCP fallback when UDP is healthy");
+    return Task.CompletedTask;
+}
+
+static Task TestDiagnosisRegisteredOnTls()
+{
+    var path = new[]
+    {
+        Outcome(SipTransport.Udp, 5060, FailureStage.NoSipResponse),
+        Outcome(SipTransport.Tcp, 5060, FailureStage.Success, status: 401),
+        Outcome(SipTransport.Tls, 5061, FailureStage.Success, status: 401)
+    };
+    var registered = Outcome(SipTransport.Tls, 5061, FailureStage.Success, status: 200, registered: true);
+    var diagnosis = DiagnosisEngine.From(path, Phone(SipTransport.Udp), registered);
+
+    Assert(diagnosis.Cause == DiagnosisCause.RouterUdpBlocked, "router warning survives a TLS REGISTER");
+    Assert(diagnosis.Severity == DiagnosisSeverity.Warn, "warn, not a clean pass");
+    Assert(diagnosis.Headline.Contains("Registered", StringComparison.OrdinalIgnoreCase), "says this laptop registered");
+    Assert(diagnosis.DoNow.Any(step => step.Detail.Contains("transport_type = 2")), "still tell them to put the phone on TLS");
+    return Task.CompletedTask;
+}
+
+static Task TestDiagnosisPhoneConfigFirst()
+{
+    var path = new[]
+    {
+        Outcome(SipTransport.Udp, 5060, FailureStage.Success, status: 401),
+        Outcome(SipTransport.Tcp, 5060, FailureStage.Success, status: 401),
+        Outcome(SipTransport.Tls, 5061, FailureStage.Success, status: 401)
+    };
+    var diagnosis = DiagnosisEngine.From(path, Phone(SipTransport.Tls, emptyProxy: true));
+
+    Assert(diagnosis.Cause == DiagnosisCause.PhoneConfig, "blocking cfg wins");
+    Assert(diagnosis.Severity == DiagnosisSeverity.Fail, "config fail");
+    Assert(diagnosis.DoNow.Any(step => step.Title.Contains("template", StringComparison.OrdinalIgnoreCase)), "fix template first");
+    return Task.CompletedTask;
+}
+
+static DiagnosticResult Outcome(
+    SipTransport transport,
+    int port,
+    FailureStage stage,
+    AlgVerdict? alg = null,
+    int? status = null,
+    bool registered = false)
+{
+    var sip = stage is FailureStage.Success or FailureStage.SipReject;
+    return new DiagnosticResult(
+        NetworkReachable: stage is not (FailureStage.Dns or FailureStage.Connect or FailureStage.TlsHandshake),
+        SipResponseReceived: sip,
+        Registered: registered,
+        FinalStatusCode: sip ? status ?? (stage == FailureStage.SipReject ? 403 : 401) : null,
+        Summary: stage.ToString(),
+        Entries: Array.Empty<DiagnosticLogEntry>(),
+        Stage: stage,
+        Transport: transport,
+        Port: port,
+        Alg: alg);
+}
+
+static YealinkAccountSettings Phone(
+    SipTransport transport,
+    bool stun = false,
+    bool privateNtp = false,
+    bool keepalive = false,
+    bool emptyProxy = false) =>
+    new()
+    {
+        Server = "pbx.example.com",
+        SipUser = "101",
+        AuthenticationName = "101",
+        Password = "secret",
+        Transport = transport,
+        Port = transport == SipTransport.Tls ? 5061 : 5060,
+        AccountEnabled = true,
+        OutboundProxyEnabled = emptyProxy ? true : false,
+        OutboundProxyAddress = emptyProxy ? "" : null,
+        StunEnabled = stun,
+        StunServer = stun ? "stun.example.com" : null,
+        NtpServers = privateNtp ? new[] { "172.19.0.1" } : Array.Empty<string>(),
+        KeepAliveMode = keepalive ? 1 : null,
+        KeepAliveSeconds = keepalive ? 30 : null
     };
 
 static void Assert(bool condition, string description)

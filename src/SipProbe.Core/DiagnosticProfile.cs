@@ -26,7 +26,7 @@ public sealed record DiagnosticProfile
     public bool Authenticate { get; init; } = true;
     public bool KeepRegistered { get; init; }
     public bool UnregisterOnly { get; init; }
-    public string UserAgent { get; init; } = "InspireTel-SIP-Probe/1.3";
+    public string UserAgent { get; init; } = "InspireTel-SIP-Probe/1.5";
     public IReadOnlyList<string> NtpServers { get; init; } = Array.Empty<string>();
 
     public string EffectiveAuthenticationName =>
@@ -87,6 +87,16 @@ public enum DiagnosticLevel
     Detail
 }
 
+public enum FailureStage
+{
+    Dns,
+    Connect,
+    TlsHandshake,
+    NoSipResponse,
+    SipReject,
+    Success
+}
+
 public sealed record DiagnosticLogEntry(DateTimeOffset Timestamp, DiagnosticLevel Level, string Message)
 {
     public override string ToString() => $"{Timestamp:HH:mm:ss.fff} [{Level.ToString().ToUpperInvariant(),-7}] {Message}";
@@ -106,4 +116,8 @@ public sealed record DiagnosticResult(
     int? FinalStatusCode,
     string Summary,
     IReadOnlyList<DiagnosticLogEntry> Entries,
-    IHeldSipRegistration? Held = null);
+    IHeldSipRegistration? Held = null,
+    FailureStage Stage = FailureStage.Connect,
+    SipTransport Transport = SipTransport.Udp,
+    int Port = 0,
+    AlgVerdict? Alg = null);

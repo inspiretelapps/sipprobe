@@ -114,6 +114,15 @@ public sealed class MainForm : Form
         Font = new Font("Segoe UI", 9.5f),
         ForeColor = Color.FromArgb(186, 230, 210)
     };
+    private readonly Label _resultAdvice = new()
+    {
+        Text = "",
+        AutoSize = true,
+        MaximumSize = new Size(720, 0),
+        Font = new Font("Segoe UI", 9f),
+        ForeColor = Color.FromArgb(186, 230, 210),
+        Visible = false
+    };
     private readonly Panel _chipConfig = DotPanel();
     private readonly Panel _chipPath = DotPanel();
     private readonly Panel _chipReg = DotPanel();
@@ -147,7 +156,7 @@ public sealed class MainForm : Form
     };
     private readonly Label _version = new()
     {
-        Text = "v1.4",
+        Text = "v1.5",
         AutoSize = true,
         Font = new Font("Segoe UI", 9f),
         ForeColor = Color.FromArgb(90, 110, 108)
@@ -170,6 +179,10 @@ public sealed class MainForm : Form
     private bool _apiSecretRevealed;
     private SipCaptureListener? _captureListener;
     private bool _configBlocked;
+    private YealinkAccountSettings? _handsetSettings;
+    private readonly List<DiagnosticResult> _pathResults = new();
+    private DiagnosticResult? _registrationResult;
+    private Diagnosis? _diagnosis;
 
     private const int CapturePort = 5060;
 
@@ -694,6 +707,7 @@ public sealed class MainForm : Form
         _resultDetail.Margin = new Padding(0, 4, 0, 0);
         headline.Controls.Add(_resultTitle);
         headline.Controls.Add(_resultDetail);
+        headline.Controls.Add(_resultAdvice);
         _resultBanner.Controls.Add(headline);
 
         var top = new FlowLayoutPanel
@@ -828,6 +842,7 @@ public sealed class MainForm : Form
         _activeRun = new CancellationTokenSource();
         var anyReachable = false;
         var allReachable = true;
+        var pathResults = new List<DiagnosticResult>();
         try
         {
             foreach (var item in baseProfile.MatrixTargets())
@@ -842,12 +857,15 @@ public sealed class MainForm : Form
                     Password = string.Empty
                 };
                 var result = await ExecuteEngineAsync(profile, _activeRun.Token);
+                pathResults.Add(result);
                 anyReachable |= result.SipResponseReceived;
                 allReachable &= result.SipResponseReceived;
             }
+            _pathResults.Clear();
+            _pathResults.AddRange(pathResults);
             _pathState = allReachable ? "ok" : anyReachable ? "partial" : "fail";
             _status.Text = allReachable ? "Path Reachable" : anyReachable ? "Path Partially Reachable" : "Path Failed";
-            RefreshResultBanner();
+            PresentDiagnosis(DiagnosisEngine.From(_pathResults, _handsetSettings, _registrationResult), switchTransport: true);
         }
         catch (OperationCanceledException)
         {
@@ -869,6 +887,7 @@ public sealed class MainForm : Form
         try
         {
             var result = await ExecuteEngineAsync(profile, _activeRun.Token);
+            _registrationResult = result;
             if (result.Registered)
             {
                 await ReplaceHeldSessionAsync(result.Held);
@@ -885,7 +904,7 @@ public sealed class MainForm : Form
                     ? $"Registration Failed ({result.FinalStatusCode})"
                     : result.Summary;
             }
-            RefreshResultBanner();
+            PresentDiagnosis(DiagnosisEngine.From(_pathResults, _handsetSettings, result), switchTransport: false);
         }
         catch (OperationCanceledException)
         {
@@ -1088,7 +1107,7 @@ public sealed class MainForm : Form
 
         var header = new[]
         {
-            "InspireTel SIP Probe v1.4 (Windows)",
+            "InspireTel SIP Probe v1.5 (Windows)",
             $"Exported: {DateTimeOffset.Now:u}",
             $"Server: {_server.Text.Trim()}:{_port.Value}",
             $"Transport: {_transport.SelectedItem}",
@@ -1176,10 +1195,14 @@ public sealed class MainForm : Form
         foreach (var warning in settings.Audit())
             AppendLocal(warning.Level, warning.Message);
         _configBlocked = settings.HasBlockingProblem;
+        _handsetSettings = settings;
         _configLoaded = true;
         _configName = Path.GetFileName(path);
         _status.Text = $"Config Loaded — {_configName}";
-        RefreshResultBanner();
+        if (_pathResults.Count > 0)
+            PresentDiagnosis(DiagnosisEngine.From(_pathResults, _handsetSettings, _registrationResult), switchTransport: false);
+        else
+            RefreshResultBanner();
         ApplyTheme();
     }
 
@@ -1293,50 +1316,9 @@ public sealed class MainForm : Form
             _ => "SIP Registration"
         });
 
-        if (_regState == "held")
+        if (_diagnosis is not null)
         {
-            ShowBanner(
-                Color.FromArgb(14, 64, 52),
-                Color.FromArgb(110, 232, 180),
-                Color.FromArgb(186, 230, 210),
-                "Passed — Registered",
-                "The SIP session is being held open. Yeastar only shows TLS registrations while this connection stays up. Confirm it now, then click Unregister Now.");
-        }
-        else if (_regState == "ok")
-        {
-            ShowBanner(
-                Color.FromArgb(14, 64, 52),
-                Color.FromArgb(110, 232, 180),
-                Color.FromArgb(186, 230, 210),
-                "Passed — Registered",
-                "SIP registration succeeded and was then removed. Tick Keep Registered On The PBX to leave it visible in Yeastar.");
-        }
-        else if (_regState == "fail")
-        {
-            ShowBanner(
-                Color.FromArgb(72, 24, 24),
-                Color.FromArgb(252, 165, 165),
-                Color.FromArgb(254, 202, 202),
-                "Registration Failed",
-                "The PBX rejected or did not complete SIP registration. Read the live trace for the SIP code.");
-        }
-        else if (_pathState == "ok")
-        {
-            ShowBanner(
-                Color.FromArgb(14, 52, 64),
-                Color.FromArgb(125, 211, 252),
-                Color.FromArgb(186, 220, 232),
-                "Passed — Path Reachable",
-                "The PBX answered on the tested transports. Next: Test SIP Registration.");
-        }
-        else if (_pathState == "fail")
-        {
-            ShowBanner(
-                Color.FromArgb(72, 24, 24),
-                Color.FromArgb(252, 165, 165),
-                Color.FromArgb(254, 202, 202),
-                "Path Failed",
-                "No usable SIP response. Check DNS, firewall, port and transport.");
+            ShowDiagnosisBanner(_diagnosis);
         }
         else if (_configBlocked)
         {
@@ -1362,6 +1344,7 @@ public sealed class MainForm : Form
         else
         {
             _resultBanner.Visible = false;
+            _resultAdvice.Visible = false;
         }
 
         _unregister.Visible = _heldProfile is not null && _activeRun is null;
@@ -1377,6 +1360,11 @@ public sealed class MainForm : Form
         {
             color = Color.FromArgb(251, 191, 36);
             tip = "Test running";
+        }
+        else if (_diagnosis?.Severity == DiagnosisSeverity.Warn || _pathState == "partial")
+        {
+            color = Color.FromArgb(251, 191, 36);
+            tip = _diagnosis?.Headline ?? "Path partially reachable";
         }
         else if (_regState is "ok" or "held")
         {
@@ -1402,7 +1390,58 @@ public sealed class MainForm : Form
         _tips.SetToolTip(_beacon, tip);
     }
 
-    private void ShowBanner(Color background, Color title, Color detail, string heading, string body)
+    private void PresentDiagnosis(Diagnosis diagnosis, bool switchTransport)
+    {
+        _diagnosis = diagnosis;
+        AppendSeparator("WHAT THIS MEANS");
+        foreach (var line in diagnosis.ToTraceLines())
+            AppendLocal(line.Level, line.Message);
+        if (switchTransport)
+            ApplySuggestedTransport(diagnosis);
+        RefreshResultBanner();
+    }
+
+    private void ApplySuggestedTransport(Diagnosis diagnosis)
+    {
+        if (diagnosis.SuggestedTransport is not { } transport || diagnosis.SuggestedPort is not { } port)
+            return;
+        if (SelectedTransport() == transport && (int)_port.Value == port)
+            return;
+        var previous = SelectedTransport();
+        _transport.SelectedItem = transport.ToString();
+        _port.Value = port;
+        AppendLocal(DiagnosticLevel.Info,
+            $"Switched the form to {transport.ToString().ToUpperInvariant()} / {port} so Test SIP Registration uses the path that worked (was {previous.ToString().ToUpperInvariant()}).");
+    }
+
+    private void ShowDiagnosisBanner(Diagnosis diagnosis)
+    {
+        var (background, title, detail) = diagnosis.Severity switch
+        {
+            DiagnosisSeverity.Pass => (
+                Color.FromArgb(14, 64, 52),
+                Color.FromArgb(110, 232, 180),
+                Color.FromArgb(186, 230, 210)),
+            DiagnosisSeverity.Warn => (
+                Color.FromArgb(64, 42, 14),
+                Color.FromArgb(252, 211, 125),
+                Color.FromArgb(253, 230, 176)),
+            DiagnosisSeverity.Fail => (
+                Color.FromArgb(72, 24, 24),
+                Color.FromArgb(252, 165, 165),
+                Color.FromArgb(254, 202, 202)),
+            _ => throw new ArgumentOutOfRangeException(nameof(diagnosis.Severity), diagnosis.Severity, null)
+        };
+        var summary = diagnosis.Summary;
+        if (_regState == "held")
+            summary += " The SIP session is being held open. Confirm it in Yeastar, then click Unregister Now.";
+        else if (_regState == "ok" && diagnosis.Cause == DiagnosisCause.Registered)
+            summary += " Tick Keep Registered On The PBX to leave it visible in Yeastar.";
+        ShowBanner(background, title, detail, diagnosis.Headline, summary,
+            diagnosis.HasAdvice ? diagnosis.FormatAdviceBody() : null);
+    }
+
+    private void ShowBanner(Color background, Color title, Color detail, string heading, string body, string? advice = null)
     {
         _resultBanner.Visible = true;
         _resultBanner.BackColor = background;
@@ -1410,6 +1449,18 @@ public sealed class MainForm : Form
         _resultTitle.ForeColor = title;
         _resultDetail.Text = body;
         _resultDetail.ForeColor = detail;
+        if (string.IsNullOrWhiteSpace(advice))
+        {
+            _resultAdvice.Visible = false;
+            _resultAdvice.Text = string.Empty;
+        }
+        else
+        {
+            _resultAdvice.Visible = true;
+            _resultAdvice.Text = advice;
+            _resultAdvice.ForeColor = detail;
+            _resultAdvice.Margin = new Padding(0, 8, 0, 0);
+        }
     }
 
     private async Task ReplaceHeldSessionAsync(IHeldSipRegistration? next)
@@ -1823,5 +1874,7 @@ public sealed class MainForm : Form
         "TCP/TLS connect fails — firewall, ISP, wrong port, or service down.\n" +
         "TLS handshake fails — certificate, clock, or TLS inspection.\n" +
         "Via sent-by rewritten — SIP ALG. received=/rport= alone is normal NAT.\n" +
+        "UDP silent while TCP/TLS answers — the router, not the PBX. If you cannot change the router, put the Yealink on TLS.\n" +
+        "Do not enable STUN to fix SIP ALG.\n" +
         "Clock vs certificate — fix NTP (no private 172.19.x.x) before blaming TLS.";
 }

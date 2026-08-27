@@ -22,8 +22,12 @@ public sealed record YealinkAccountSettings
     public bool? StaticIpEnabled { get; init; }
     public bool? StunEnabled { get; init; }
     public string? StunServer { get; init; }
+    public int? KeepAliveMode { get; init; }
+    public int? KeepAliveSeconds { get; init; }
     public bool? TrustCertificatesOnly { get; init; }
     public int? SipListenPort { get; init; }
+
+    public bool KeepAliveEnabled => KeepAliveMode is > 0;
 
     public IReadOnlyList<string> LoadedFields
     {
@@ -39,6 +43,8 @@ public sealed record YealinkAccountSettings
             if (ExpirySeconds is not null) loaded.Add("registration expiry");
             if (NtpServers.Count > 0) loaded.Add("NTP servers");
             if (OutboundProxyEnabled is not null) loaded.Add("outbound proxy");
+            if (StunEnabled is not null) loaded.Add("STUN");
+            if (KeepAliveMode is not null) loaded.Add("SIP keep-alive");
             return loaded;
         }
     }
@@ -131,6 +137,14 @@ public sealed record YealinkAccountSettings
         {
             findings.Add((DiagnosticLevel.Warning,
                 "STUN is enabled but no STUN server is set. The handset may stall while trying to discover its public address."));
+        }
+
+        if (KeepAliveEnabled)
+        {
+            findings.Add((DiagnosticLevel.Detail,
+                "SIP keep-alive is enabled" +
+                (KeepAliveSeconds is null ? "." : $" every {KeepAliveSeconds}s.") +
+                " That helps plain NAT. It does not beat SIP ALG."));
         }
 
         if (ExpirySeconds is not null && ExpirySeconds < 60)
@@ -246,6 +260,8 @@ public static class YealinkConfigParser
             StaticIpEnabled = staticIp,
             StunEnabled = Flag("account.1.nat.nat_traversal"),
             StunServer = Find("account.1.nat.stun_server"),
+            KeepAliveMode = Number("account.1.nat.udp_update_enable", 0, 3),
+            KeepAliveSeconds = Number("account.1.nat.udp_update_time", 1, 3600),
             TrustCertificatesOnly = Flag("static.security.trust_certificates"),
             SipListenPort = Number("sip.listen_port", 1, 65535)
         };

@@ -61,6 +61,8 @@ internal static class CliProbe
 
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(3));
         var failed = false;
+        var pathResults = new List<DiagnosticResult>();
+        DiagnosticResult? registration = null;
 
         if (runMatrix)
         {
@@ -74,6 +76,7 @@ internal static class CliProbe
                     Authenticate = false,
                     Password = string.Empty
                 }, timeout.Token);
+                pathResults.Add(result);
                 failed |= !result.SipResponseReceived;
             }
         }
@@ -81,9 +84,19 @@ internal static class CliProbe
         if (runRegister)
         {
             WriteSeparator($"TEST SIP REGISTRATION  {baseProfile.Transport.ToString().ToUpperInvariant()}");
-            var result = await RunEngineAsync(baseProfile with { Authenticate = true }, timeout.Token);
-            failed |= !result.Registered;
-            Write(result.Registered ? DiagnosticLevel.Success : DiagnosticLevel.Warning, result.Summary);
+            registration = await RunEngineAsync(baseProfile with { Authenticate = true }, timeout.Token);
+            failed |= !registration.Registered;
+            Write(registration.Registered ? DiagnosticLevel.Success : DiagnosticLevel.Warning, registration.Summary);
+        }
+
+        var diagnosis = DiagnosisEngine.From(pathResults, settings, registration);
+        WriteSeparator("WHAT THIS MEANS");
+        foreach (var line in diagnosis.ToTraceLines())
+            Write(line.Level, line.Message);
+        if (!string.IsNullOrWhiteSpace(diagnosis.FormatAdviceBody()))
+        {
+            Console.WriteLine();
+            Console.WriteLine(diagnosis.FormatAdviceBody());
         }
 
         return failed ? 1 : 0;

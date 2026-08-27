@@ -39,7 +39,7 @@ public sealed class SipDiagnosticEngine
         catch (Exception ex)
         {
             Log(DiagnosticLevel.Error, ex.Message);
-            return Result(false, false, false, null, "Invalid configuration.");
+            return Result(suppliedProfile, FailureStage.Connect, false, false, false, null, "Invalid configuration.");
         }
 
         Log(DiagnosticLevel.Info,
@@ -61,7 +61,7 @@ public sealed class SipDiagnosticEngine
         catch (Exception ex) when (ex is SocketException or OperationCanceledException)
         {
             Log(DiagnosticLevel.Error, $"DNS resolution failed: {FriendlyException(ex, cancellationToken)}");
-            return Result(false, false, false, null, "DNS resolution failed.");
+            return Result(profile, FailureStage.Dns, false, false, false, null, "DNS resolution failed.");
         }
 
         foreach (var finding in ClockCertificateCheck.AnalyzeNtpServers(profile.NtpServers))
@@ -85,6 +85,7 @@ public sealed class SipDiagnosticEngine
 
             IHeldSipRegistration? held = null;
             var networkReachable = profile.Transport != SipTransport.Udp;
+            AlgVerdict? alg = null;
             try
             {
                 var callId = $"{Guid.NewGuid():N}@sipprobe";
@@ -105,20 +106,21 @@ public sealed class SipDiagnosticEngine
                 {
                     Log(DiagnosticLevel.Error, $"No usable SIP response: {FriendlyException(ex, cancellationToken)}");
                     var transportHint = profile.Transport == SipTransport.Udp
-                        ? "UDP was sent, but no reply returned. A firewall, SIP ALG, routing policy, or wrong port is likely."
+                        ? "UDP was sent, but no reply returned. The router is likely dropping or mangling UDP SIP (SIP ALG is a common cause)."
                         : "The connection opened, but the PBX did not return a SIP response.";
                     Log(DiagnosticLevel.Warning, transportHint);
-                    return Result(networkReachable, false, false, null, "No SIP response received.");
+                    return Result(profile, FailureStage.NoSipResponse, networkReachable, false, false, null,
+                        "No SIP response received.");
                 }
 
                 LogResponse(firstResponse, "Initial response");
-                LogAlg(firstRequest, firstResponse, channel.LocalEndPoint);
+                alg = LogAlg(firstRequest, firstResponse, channel.LocalEndPoint);
 
                 if (firstResponse.StatusCode == 200)
                 {
                     Log(DiagnosticLevel.Success, "The PBX accepted registration without a digest challenge.");
                     var accepted = await FinishSuccessfulRegistrationAsync(
-                        channel, profile, requestUri, callId, fromTag, 2, null, cancellationToken);
+                        channel, profile, requestUri, callId, fromTag, 2, null, alg, cancellationToken);
                     held = accepted.Held;
                     return accepted;
                 }
@@ -126,8 +128,8 @@ public sealed class SipDiagnosticEngine
                 if (firstResponse.StatusCode is not (401 or 407))
                 {
                     ExplainStatus(firstResponse.StatusCode);
-                    return Result(true, true, false, firstResponse.StatusCode,
-                        $"PBX replied {firstResponse.StatusCode} {firstResponse.ReasonPhrase}.");
+                    return Result(profile, FailureStage.SipReject, true, true, false, firstResponse.StatusCode,
+                        $"PBX replied {firstResponse.StatusCode} {firstResponse.ReasonPhrase}.", alg: alg);
                 }
 
                 Log(DiagnosticLevel.Success,
@@ -138,7 +140,8 @@ public sealed class SipDiagnosticEngine
                 if (string.IsNullOrWhiteSpace(challengeValue))
                 {
                     Log(DiagnosticLevel.Error, $"The {firstResponse.StatusCode} response did not contain {challengeHeaderName}.");
-                    return Result(true, true, false, firstResponse.StatusCode, "Authentication challenge was malformed.");
+                    return Result(profile, FailureStage.SipReject, true, true, false, firstResponse.StatusCode,
+                        "Authentication challenge was malformed.", alg: alg);
                 }
 
                 DigestChallenge challenge;
@@ -151,19 +154,22 @@ public sealed class SipDiagnosticEngine
                 catch (Exception ex) when (ex is FormatException or NotSupportedException)
                 {
                     Log(DiagnosticLevel.Error, ex.Message);
-                    return Result(true, true, false, firstResponse.StatusCode, "Unsupported authentication challenge.");
+                    return Result(profile, FailureStage.SipReject, true, true, false, firstResponse.StatusCode,
+                        "Unsupported authentication challenge.", alg: alg);
                 }
 
                 if (!profile.Authenticate)
                 {
                     Log(DiagnosticLevel.Success, "Reachability-only probe completed; authentication was intentionally skipped.");
-                    return Result(true, true, false, firstResponse.StatusCode, "PBX reachable; authentication not attempted.");
+                    return Result(profile, FailureStage.Success, true, true, false, firstResponse.StatusCode,
+                        "PBX reachable; authentication not attempted.", alg: alg);
                 }
 
                 if (string.IsNullOrEmpty(profile.Password))
                 {
                     Log(DiagnosticLevel.Warning, "The PBX is reachable, but no password was supplied, so authenticated registration was skipped.");
-                    return Result(true, true, false, firstResponse.StatusCode, "PBX reachable; password not supplied.");
+                    return Result(profile, FailureStage.Success, true, true, false, firstResponse.StatusCode,
+                        "PBX reachable; password not supplied.", alg: alg);
                 }
 
                 var authorization = challenge.CreateAuthorization(
@@ -192,35 +198,37 @@ public sealed class SipDiagnosticEngine
                     if (profile.UnregisterOnly)
                     {
                         Log(DiagnosticLevel.Success, "Unregister succeeded. The diagnostic registration is no longer on the PBX.");
-                        return Result(true, true, true, 200, "Unregistered.");
+                        return Result(profile, FailureStage.Success, true, true, true, 200, "Unregistered.", alg: alg);
                     }
 
                     Log(DiagnosticLevel.Success,
                         "REGISTER succeeded. The PBX, credentials, network path, and selected transport all work from this laptop.");
                     var accepted = await FinishSuccessfulRegistrationAsync(
-                        channel, profile, requestUri, callId, fromTag, 3, challenge, cancellationToken);
+                        channel, profile, requestUri, callId, fromTag, 3, challenge, alg, cancellationToken);
                     held = accepted.Held;
                     return accepted;
                 }
 
                 ExplainStatus(finalResponse.StatusCode);
-                return Result(true, true, false, finalResponse.StatusCode,
-                    $"Registration rejected: {finalResponse.StatusCode} {finalResponse.ReasonPhrase}.");
+                return Result(profile, FailureStage.SipReject, true, true, false, finalResponse.StatusCode,
+                    $"Registration rejected: {finalResponse.StatusCode} {finalResponse.ReasonPhrase}.", alg: alg);
             }
             catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
             {
                 Log(DiagnosticLevel.Error, $"Operation timed out after {profile.TimeoutSeconds} seconds.");
-                return Result(networkReachable, false, false, null, "Operation timed out.");
+                var stage = networkReachable ? FailureStage.NoSipResponse : FailureStage.Connect;
+                return Result(profile, stage, networkReachable, false, false, null, "Operation timed out.", alg: alg);
             }
             catch (AuthenticationException ex)
             {
                 Log(DiagnosticLevel.Error, $"TLS authentication failed: {ex.Message}");
-                return Result(false, false, false, null, "TLS handshake failed.");
+                return Result(profile, FailureStage.TlsHandshake, false, false, false, null, "TLS handshake failed.");
             }
             catch (Exception ex) when (ex is SocketException or IOException or FormatException or NotSupportedException)
             {
                 Log(DiagnosticLevel.Error, $"Probe failed: {ex.Message}");
-                return Result(networkReachable, false, false, null, "Probe failed.");
+                var stage = networkReachable ? FailureStage.NoSipResponse : FailureStage.Connect;
+                return Result(profile, stage, networkReachable, false, false, null, "Probe failed.", alg: alg);
             }
             finally
             {
@@ -231,7 +239,17 @@ public sealed class SipDiagnosticEngine
 
         Log(DiagnosticLevel.Error,
             "Could not open the selected transport to any resolved address: " + (lastConnectionError?.Message ?? "unknown error"));
-        return Result(false, false, false, null, "Connection failed.");
+        var connectStage = lastConnectionError is AuthenticationException
+            ? FailureStage.TlsHandshake
+            : FailureStage.Connect;
+        return Result(
+            profile,
+            connectStage,
+            false,
+            false,
+            false,
+            null,
+            connectStage == FailureStage.TlsHandshake ? "TLS handshake failed." : "Connection failed.");
     }
 
     private async Task<ISipChannel?> TryOpenChannelAsync(
@@ -266,8 +284,9 @@ public sealed class SipDiagnosticEngine
         catch (Exception ex) when (ex is SocketException or IOException or AuthenticationException or OperationCanceledException)
         {
             recordError(ex);
+            var label = ex is AuthenticationException ? "TLS handshake" : "Connection";
             Log(DiagnosticLevel.Warning,
-                $"Connection to {address}:{profile.Port} failed: {FriendlyException(ex, cancellationToken)}");
+                $"{label} to {address}:{profile.Port} failed: {FriendlyException(ex, cancellationToken)}");
             return null;
         }
     }
@@ -333,6 +352,7 @@ public sealed class SipDiagnosticEngine
         string fromTag,
         int cseq,
         DigestChallenge? challenge,
+        AlgVerdict? alg,
         CancellationToken cancellationToken)
     {
         if (profile.KeepRegistered)
@@ -351,12 +371,13 @@ public sealed class SipDiagnosticEngine
                 "Keeping the SIP connection open. Yeastar drops TLS/TCP registrations as soon as this session closes.");
             Log(DiagnosticLevel.Info,
                 "Confirm the extension on the PBX now. Click Unregister Now when finished.");
-            return Result(true, true, true, 200, "Registered and holding the session open.", held);
+            return Result(profile, FailureStage.Success, true, true, true, 200,
+                "Registered and holding the session open.", held, alg);
         }
 
         await TryRemoveDiagnosticBindingAsync(
             channel, profile, requestUri, callId, fromTag, cseq, challenge, cancellationToken);
-        return Result(true, true, true, 200, "Registration test succeeded.");
+        return Result(profile, FailureStage.Success, true, true, true, 200, "Registration test succeeded.", alg: alg);
     }
 
     private async Task TryRemoveDiagnosticBindingAsync(
@@ -440,13 +461,27 @@ public sealed class SipDiagnosticEngine
     }
 
     private DiagnosticResult Result(
+        DiagnosticProfile profile,
+        FailureStage stage,
         bool networkReachable,
         bool sipResponseReceived,
         bool registered,
         int? finalStatusCode,
         string summary,
-        IHeldSipRegistration? held = null) =>
-        new(networkReachable, sipResponseReceived, registered, finalStatusCode, summary, Entries, held);
+        IHeldSipRegistration? held = null,
+        AlgVerdict? alg = null) =>
+        new(
+            networkReachable,
+            sipResponseReceived,
+            registered,
+            finalStatusCode,
+            summary,
+            Entries,
+            held,
+            stage,
+            profile.Transport,
+            profile.Port,
+            alg);
 
     private void Log(DiagnosticLevel level, string message)
     {
@@ -485,11 +520,12 @@ public sealed class SipDiagnosticEngine
         return value.TrimEnd('.');
     }
 
-    private void LogAlg(SipRegisterMessage sent, SipResponse response, IPEndPoint local)
+    private AlgVerdict LogAlg(SipRegisterMessage sent, SipResponse response, IPEndPoint local)
     {
         var analysis = SipAlgDetector.Analyze(sent, response, local);
         foreach (var finding in analysis.Findings)
             Log(finding.Level, finding.Message);
+        return analysis.Verdict;
     }
 
     private async Task TryCompareHttpsDateAsync(DiagnosticProfile profile, CancellationToken cancellationToken)

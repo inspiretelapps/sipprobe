@@ -6,7 +6,7 @@ Windows, macOS and Linux builds share the same engine. Packaged apps are attache
 
 The program does not capture audio, install a driver, require administrator rights, or contact any telemetry service. It sends traffic only to the PBX hostname you enter (plus, if you use **Check PBX Status**, the Yeastar OpenAPI URL). SIP and API passwords are held in memory for the life of the process and are **never** written to the live trace or an exported log.
 
-Current app version: **1.4**.
+Current app version: **1.5**.
 
 ## What it proves
 
@@ -15,6 +15,7 @@ Current app version: **1.4**.
 - TLS 1.2 negotiation, certificate hostname / trust / SAN, issuer, and validity versus the **local clock**
 - Public NTP versus private NTP (for example `172.19.x.x`) loaded from a Yealink `.cfg`
 - SIP ALG detection from Via sent-by / branch rewrite (`received` / `rport` alone is treated as normal NAT)
+- A **diagnosis** after Test Path: whether the router is interfering, and what to do when you cannot log into it
 - Receipt of a normal SIP `401` / `407` Digest challenge
 - Authenticated SIP `REGISTER` using separate SIP user and authentication-name fields
 - Holding that registration open so Yeastar can show the extension as registered (TLS/TCP drop as soon as the socket closes)
@@ -139,9 +140,13 @@ If SIP registration succeeds here but the handset stays on Registering, the path
 | Repeated `401` | Authentication name or password rejected |
 | SIP `403` | Transport / security restriction, blocked IP, or registration forbidden |
 | Via sent-by rewritten | SIP ALG rewrote the REGISTER; `received` / `rport` alone is normal NAT |
+| UDP silent, TCP and/or TLS `401` | **The router** (SIP ALG or a UDP SIP filter), not the PBX. If you cannot change the router, put the Yealink on TLS (port 5061) and public NTP. Do not enable STUN to “fix” ALG |
+| All transports fail | Not a specific ALG signature. Confirm hostname, then try a phone hotspot. Last resort: VPN / Yeastar remote access / cellular |
 | Clock outside certificate dates / private NTP | Handset TLS will fail until NTP is a public server |
 | Connection succeeds but no SIP response | SIP-aware filtering / ALG, proxy interference, or SIP service problem |
 | Empty outbound proxy warning | Phone-side: proxy flag on, address blank — not a PBX reachability failure |
+
+After **Test Path**, the banner states the diagnosis in plain language and lists **Do now** steps that do not need router access. Optional router steps (disable SIP ALG) sit underneath. The form switches to the working transport so **Test SIP Registration** uses that path.
 
 ## TLS certificate diagnostic option
 
@@ -214,7 +219,7 @@ Automated tests:
 dotnet run --project tests/SipProbe.SelfTest/SipProbe.SelfTest.csproj -c Release
 ```
 
-The self-tests cover SIP response parsing, RFC Digest calculation, configurable matrix ports, SIP ALG Via rewrite detection, clock / NTP checks, Yealink `.cfg` parsing, Yeastar OpenAPI status / blocked-IP handling, and complete UDP, TCP, and TLS REGISTER / authentication / cleanup exchanges against local mock servers.
+The self-tests cover SIP response parsing, RFC Digest calculation, configurable matrix ports, SIP ALG Via rewrite detection, router-diagnosis advice (UDP blocked / ALG / no router access), clock / NTP checks, Yealink `.cfg` parsing, Yeastar OpenAPI status / blocked-IP handling, and complete UDP, TCP, and TLS REGISTER / authentication / cleanup exchanges against local mock servers.
 
 ## Operational notes
 
